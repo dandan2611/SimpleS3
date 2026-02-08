@@ -24,7 +24,7 @@ ENV SIMPLES3_LOG_LEVEL=info
 EXPOSE 9000
 EXPOSE 9001
 
-HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
-    CMD wget -q -O- http://localhost:9001/health || exit 1
+HEALTHCHECK --interval=5s --timeout=5s --retries=5 \
+    CMD bash -c "exec 3<>/dev/tcp/localhost/9001 && echo -e 'GET /ready HTTP/1.0\r\nHost: localhost\r\n\r\n' >&3 && head -1 <&3 | grep -q '200 OK'"
 
 ENTRYPOINT ["simples3-server"]

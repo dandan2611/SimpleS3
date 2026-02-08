@@ -7,24 +7,22 @@ services:
     volumes:
       - simples3-data:/data
       - simples3-metadata:/metadata
+#      - ./init.toml:/config/init.toml:ro
     environment:
       - SIMPLES3_BIND=0.0.0.0:9000
       - SIMPLES3_ADMIN_BIND=0.0.0.0:9001
       - SIMPLES3_HOSTNAME=s3.localhost
       - SIMPLES3_REGION=us-east-1
       - SIMPLES3_LOG_LEVEL=trace
-    healthcheck:
-      test: ["CMD", "wget", "-q", "-O-", "http://localhost:9001/health"]
-      interval: 15s
-      timeout: 5s
-      start_period: 10s
-      retries: 3
 #      - SIMPLES3_ANONYMOUS_GLOBAL=true
 #      - SIMPLES3_ADMIN_TOKEN=
 #      - SIMPLES3_ADMIN_ENABLED=true
 #      - SIMPLES3_INIT_CONFIG=/config/init.toml
-#    volumes:
-#      - ./init.toml:/config/init.toml:ro
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/9001 && echo -e 'GET /ready HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && head -1 <&3 | grep -q '200 OK'"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
 volumes:
   simples3-data:
