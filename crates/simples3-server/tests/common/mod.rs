@@ -63,10 +63,14 @@ impl TestServer {
         // Ignore error if credential already exists (e.g. from init config)
         let _ = metadata.create_credential("TESTAKID", "TESTSECRET", "test");
 
+        let metrics_handle = simples3_server::metrics::init_metrics();
+
         let state = Arc::new(simples3_server::AppState {
             config,
             metadata: metadata.clone(),
             filestore,
+            start_time: std::time::Instant::now(),
+            metrics_handle,
         });
 
         let s3_app = simples3_server::router::build_s3_router(state.clone());

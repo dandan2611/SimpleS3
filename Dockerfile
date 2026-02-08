@@ -22,5 +22,9 @@ ENV SIMPLES3_REGION=us-east-1
 ENV SIMPLES3_LOG_LEVEL=info
 
 EXPOSE 9000
+EXPOSE 9001
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
+    CMD wget -q -O- http://localhost:9001/health || exit 1
 
 ENTRYPOINT ["simples3-server"]

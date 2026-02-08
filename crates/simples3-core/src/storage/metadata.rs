@@ -328,6 +328,11 @@ impl MetadataStore {
         Ok(())
     }
 
+    pub fn count_multipart_uploads(&self) -> Result<usize, S3Error> {
+        let tree = self.db.open_tree(MULTIPART_TREE).map_err(|e| S3Error::InternalError(e.to_string()))?;
+        Ok(tree.len())
+    }
+
     pub fn delete_multipart_upload(&self, upload_id: &str) -> Result<(), S3Error> {
         let tree = self.db.open_tree(MULTIPART_TREE).map_err(|e| S3Error::InternalError(e.to_string()))?;
         tree.remove(upload_id).map_err(|e| S3Error::InternalError(e.to_string()))?;

@@ -46,6 +46,29 @@ impl S3Operation {
         }
     }
 
+    pub fn name(&self) -> &'static str {
+        match self {
+            S3Operation::ListBuckets => "ListBuckets",
+            S3Operation::CreateBucket { .. } => "CreateBucket",
+            S3Operation::DeleteBucket { .. } => "DeleteBucket",
+            S3Operation::HeadBucket { .. } => "HeadBucket",
+            S3Operation::ListObjectsV2 { .. } => "ListObjectsV2",
+            S3Operation::PutObject { .. } => "PutObject",
+            S3Operation::GetObject { .. } => "GetObject",
+            S3Operation::HeadObject { .. } => "HeadObject",
+            S3Operation::DeleteObject { .. } => "DeleteObject",
+            S3Operation::CreateMultipartUpload { .. } => "CreateMultipartUpload",
+            S3Operation::UploadPart { .. } => "UploadPart",
+            S3Operation::CompleteMultipartUpload { .. } => "CompleteMultipartUpload",
+            S3Operation::AbortMultipartUpload { .. } => "AbortMultipartUpload",
+            S3Operation::ListParts { .. } => "ListParts",
+            S3Operation::PutObjectTagging { .. } => "PutObjectTagging",
+            S3Operation::GetObjectTagging { .. } => "GetObjectTagging",
+            S3Operation::DeleteObjectTagging { .. } => "DeleteObjectTagging",
+            S3Operation::DeleteObjects { .. } => "DeleteObjects",
+        }
+    }
+
     pub fn is_read_only(&self) -> bool {
         matches!(
             self,

@@ -116,7 +116,7 @@ async fn s3_dispatcher(
     }
 }
 
-fn url_query_pairs(query: &str) -> HashMap<String, String> {
+pub(crate) fn url_query_pairs(query: &str) -> HashMap<String, String> {
     let mut map = HashMap::new();
     for pair in query.split('&') {
         if pair.is_empty() {
@@ -151,6 +151,9 @@ pub fn build_s3_router(state: Arc<AppState>) -> Router {
             state.clone(),
             host_rewrite_middleware,
         ))
+        .layer(axum_mw::from_fn(
+            crate::middleware::metrics::metrics_middleware,
+        ))
         .with_state(state)
 }
 
@@ -179,7 +182,13 @@ pub fn build_admin_router(state: Arc<AppState>) -> Router {
             state.clone(),
             admin_auth_middleware,
         ))
+        .with_state(state.clone());
+
+    let observability = Router::new()
+        .route("/health", get(handlers::health::health))
+        .route("/ready", get(handlers::health::ready))
+        .route("/metrics", get(handlers::health::metrics_handler))
         .with_state(state);
 
-    Router::new().nest("/_admin", admin_routes)
+    observability.merge(Router::new().nest("/_admin", admin_routes))
 }

@@ -20,6 +20,8 @@ uuid = { workspace = true }
 quick-xml = { workspace = true }
 tokio-util = { version = "0.7", features = ["io"] }
 percent-encoding = { workspace = true }
+metrics = "0.24"
+metrics-exporter-prometheus = "0.16"
 
 [dev-dependencies]
 tempfile = "3"

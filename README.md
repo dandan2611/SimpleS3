@@ -23,7 +23,8 @@ A minimal, self-hostable S3-compatible object storage server written in Rust. De
 - **Anonymous access** -- configurable globally or per-bucket
 - **Admin CLI** -- manage buckets and credentials via HTTP or offline (direct sled access)
 - **Admin HTTP API** -- JSON-based `/_admin/` endpoints for bucket and credential management
-- **Docker-ready** -- multi-stage Dockerfile and Compose file included
+- **Health checks & Prometheus metrics** -- `/health`, `/ready`, `/metrics` endpoints for Kubernetes probes and observability
+- **Docker-ready** -- multi-stage Dockerfile and Compose file included, with built-in healthcheck
 - **Zero external services** -- sled embedded database for metadata, filesystem for object data
 
 ## Planned Features
@@ -34,7 +35,6 @@ A minimal, self-hostable S3-compatible object storage server written in Rust. De
 - **CORS configuration** -- per-bucket CORS rules for browser-based access
 - **TLS termination** -- built-in HTTPS support without a reverse proxy
 - **Web UI** -- lightweight admin dashboard for browsing buckets and objects
-- **Metrics / health endpoint** -- Prometheus-compatible metrics and readiness probes
 
 ## Supported Operations
 
@@ -223,11 +223,14 @@ simples3/
     │       ├── main.rs         # Entry point with CLI flag parsing
     │       ├── lib.rs          # AppState and router (for integration tests)
     │       ├── router.rs       # Admin + S3 route groups
+    │       ├── metrics.rs      # Prometheus recorder init
     │       ├── middleware/
     │       │   ├── auth.rs     # SigV4 verification middleware
-    │       │   └── host_rewrite.rs  # Virtual-host normalization
+    │       │   ├── host_rewrite.rs  # Virtual-host normalization
+    │       │   └── metrics.rs  # Request counter/histogram middleware
     │       └── handlers/
-    │           ├── admin.rs    # /_admin/ JSON API (no auth)
+    │           ├── admin.rs    # /_admin/ JSON API
+    │           ├── health.rs   # /health, /ready, /metrics handlers
     │           ├── bucket.rs   # S3 bucket operations
     │           ├── object.rs   # S3 object operations with streaming
     │           └── multipart.rs    # Multipart upload operations
@@ -251,7 +254,7 @@ simples3/
 ## Testing
 
 ```bash
-# Run all tests (49 unit + 41 integration)
+# Run all tests (49 unit + 46 integration)
 cargo test --workspace
 
 # Run only core library unit tests
@@ -282,6 +285,7 @@ cargo test -p simples3-server
 - Multipart: full lifecycle via metadata store
 - Admin API: bucket CRUD, set-anonymous, credential CRUD, port isolation, bearer token auth
 - Init config: bootstrap from TOML file, idempotent re-apply
+- Health & metrics: liveness, readiness, Prometheus metrics scrape, unauthenticated access, request counters
 
 ## License
 

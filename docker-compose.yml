@@ -13,6 +13,12 @@ services:
       - SIMPLES3_HOSTNAME=s3.localhost
       - SIMPLES3_REGION=us-east-1
       - SIMPLES3_LOG_LEVEL=info
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:9001/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
 #      - SIMPLES3_ANONYMOUS_GLOBAL=true
 #      - SIMPLES3_ADMIN_TOKEN=
 #      - SIMPLES3_ADMIN_ENABLED=true

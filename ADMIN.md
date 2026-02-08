@@ -16,6 +16,8 @@ The server binary also accepts `--admin-bind` to override `SIMPLES3_ADMIN_BIND`.
 
 ## Endpoints
 
+### Admin (authenticated when `SIMPLES3_ADMIN_TOKEN` is set)
+
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/_admin/buckets` | List all buckets |
@@ -25,6 +27,14 @@ The server binary also accepts `--admin-bind` to override `SIMPLES3_ADMIN_BIND`.
 | `GET` | `/_admin/credentials` | List all credentials (secrets masked) |
 | `POST` | `/_admin/credentials` | Create a credential |
 | `DELETE` | `/_admin/credentials/{access_key_id}` | Revoke a credential |
+
+### Observability (always unauthenticated)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Liveness probe -- returns `200 ok` |
+| `GET` | `/ready` | Readiness probe -- checks sled and filesystem, returns `200 ready` or `503` |
+| `GET` | `/metrics` | Prometheus metrics in text format |
 
 ## Bucket Endpoints
 
@@ -127,6 +137,55 @@ Revokes a credential (deactivates it without deleting). Returns `200 OK` on succ
 ```bash
 curl -X DELETE http://localhost:9001/_admin/credentials/AKXXXXXXXXXXXXXXXX
 ```
+
+## Health Checks & Metrics
+
+The admin port also serves unauthenticated observability endpoints for use with Kubernetes probes and Prometheus scrapers.
+
+### `GET /health`
+
+Returns `200 ok`. Pure liveness check with no dependency verification.
+
+```bash
+curl http://localhost:9001/health
+# ok
+```
+
+### `GET /ready`
+
+Verifies that the metadata store (sled) is accessible and the data directory is writable. Returns `200 ready` on success or `503 Service Unavailable` with an error description on failure.
+
+```bash
+curl http://localhost:9001/ready
+# ready
+```
+
+### `GET /metrics`
+
+Returns Prometheus-format metrics. Storage gauges are collected on-demand at scrape time.
+
+```bash
+curl http://localhost:9001/metrics
+```
+
+**Request metrics** (recorded per S3 request by middleware):
+
+| Metric | Type | Labels |
+|--------|------|--------|
+| `s3_requests_total` | Counter | `operation` |
+| `s3_request_duration_seconds` | Histogram | `operation` |
+| `s3_errors_total` | Counter | `status` |
+
+**Storage metrics** (collected on scrape):
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `simples3_bucket_count` | Gauge | Number of buckets |
+| `simples3_total_object_count` | Gauge | Total objects across all buckets |
+| `simples3_total_storage_bytes` | Gauge | Total storage bytes across all buckets |
+| `simples3_credential_count` | Gauge | Number of credentials |
+| `simples3_active_multipart_uploads` | Gauge | Active multipart uploads |
+| `simples3_uptime_seconds` | Gauge | Server uptime in seconds |
 
 ## Bootstrap / Init Config
 

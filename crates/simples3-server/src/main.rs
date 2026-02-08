@@ -83,10 +83,14 @@ async fn main() {
         tracing::info!(path = %init_path, "Init config applied successfully");
     }
 
+    let metrics_handle = simples3_server::metrics::init_metrics();
+
     let state = Arc::new(AppState {
         config: config.clone(),
         metadata,
         filestore,
+        start_time: std::time::Instant::now(),
+        metrics_handle,
     });
 
     let s3_app = router::build_s3_router(state.clone());
