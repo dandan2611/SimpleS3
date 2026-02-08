@@ -13,6 +13,8 @@ pub struct Config {
     pub admin_enabled: bool,
     pub admin_bind: String,
     pub admin_token: Option<String>,
+    pub multipart_ttl_secs: u64,
+    pub multipart_cleanup_interval_secs: u64,
 }
 
 impl Config {
@@ -37,6 +39,14 @@ impl Config {
             admin_token: env::var("SIMPLES3_ADMIN_TOKEN")
                 .ok()
                 .filter(|s| !s.is_empty()),
+            multipart_ttl_secs: env::var("SIMPLES3_MULTIPART_TTL")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(86400),
+            multipart_cleanup_interval_secs: env::var("SIMPLES3_MULTIPART_CLEANUP_INTERVAL")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(3600),
         }
     }
 }
@@ -54,6 +64,8 @@ impl Default for Config {
             admin_enabled: true,
             admin_bind: "127.0.0.1:9001".into(),
             admin_token: None,
+            multipart_ttl_secs: 86400,
+            multipart_cleanup_interval_secs: 3600,
         }
     }
 }

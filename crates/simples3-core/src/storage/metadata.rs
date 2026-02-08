@@ -343,6 +343,18 @@ impl MetadataStore {
         Ok(tree.len())
     }
 
+    pub fn list_multipart_uploads(&self) -> Result<Vec<MultipartUpload>, S3Error> {
+        let tree = self.db.open_tree(MULTIPART_TREE).map_err(|e| S3Error::InternalError(e.to_string()))?;
+        let mut uploads = Vec::new();
+        for item in tree.iter() {
+            let (_, val) = item.map_err(|e| S3Error::InternalError(e.to_string()))?;
+            let upload: MultipartUpload =
+                serde_json::from_slice(&val).map_err(|e| S3Error::InternalError(e.to_string()))?;
+            uploads.push(upload);
+        }
+        Ok(uploads)
+    }
+
     pub fn delete_multipart_upload(&self, upload_id: &str) -> Result<(), S3Error> {
         let tree = self.db.open_tree(MULTIPART_TREE).map_err(|e| S3Error::InternalError(e.to_string()))?;
         tree.remove(upload_id).map_err(|e| S3Error::InternalError(e.to_string()))?;
@@ -622,5 +634,34 @@ mod tests {
 
         store.delete_multipart_upload("up1").unwrap();
         assert!(matches!(store.get_multipart_upload("up1"), Err(S3Error::NoSuchUpload)));
+    }
+
+    #[test]
+    fn test_list_multipart_uploads() {
+        let (store, _dir) = temp_store();
+
+        // Empty initially
+        let uploads = store.list_multipart_uploads().unwrap();
+        assert!(uploads.is_empty());
+
+        // Create two uploads
+        for id in ["up1", "up2"] {
+            store.create_multipart_upload(&MultipartUpload {
+                upload_id: id.into(),
+                bucket: "b".into(),
+                key: "k".into(),
+                created: Utc::now(),
+                parts: vec![],
+            }).unwrap();
+        }
+
+        let uploads = store.list_multipart_uploads().unwrap();
+        assert_eq!(uploads.len(), 2);
+
+        // Delete one, list again
+        store.delete_multipart_upload("up1").unwrap();
+        let uploads = store.list_multipart_uploads().unwrap();
+        assert_eq!(uploads.len(), 1);
+        assert_eq!(uploads[0].upload_id, "up2");
     }
 }

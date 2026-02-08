@@ -99,6 +99,8 @@ async fn main() {
         .expect("Failed to bind S3 listener");
     tracing::info!("simples3 S3 API listening on {}", config.bind);
 
+    let cleanup_handle = tokio::spawn(multipart_cleanup_loop(state.clone()));
+
     if config.admin_enabled {
         let admin_app = router::build_admin_router(state);
         let admin_listener = tokio::net::TcpListener::bind(&config.admin_bind)
@@ -117,15 +119,66 @@ async fn main() {
             axum::serve(admin_listener, admin_app).await.expect("Admin server error");
         });
 
-        // Wait for S3 server to finish (shutdown signal), then drop admin
+        // Wait for S3 server to finish (shutdown signal), then drop admin and cleanup
         let _ = s3_handle.await;
         admin_handle.abort();
+        cleanup_handle.abort();
     } else {
         tracing::info!("Admin API is disabled");
         axum::serve(s3_listener, s3_app)
             .with_graceful_shutdown(shutdown_signal())
             .await
             .expect("S3 server error");
+        cleanup_handle.abort();
+    }
+}
+
+async fn multipart_cleanup_loop(state: Arc<AppState>) {
+    let ttl = state.config.multipart_ttl_secs;
+    if ttl == 0 {
+        tracing::info!("Multipart upload cleanup is disabled (TTL = 0)");
+        return;
+    }
+
+    let interval_secs = state.config.multipart_cleanup_interval_secs;
+    tracing::info!(
+        ttl_secs = ttl,
+        interval_secs = interval_secs,
+        "Starting multipart upload cleanup task"
+    );
+
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+    // First tick completes immediately — skip it so we don't clean on startup
+    interval.tick().await;
+
+    loop {
+        interval.tick().await;
+
+        let uploads = match state.metadata.list_multipart_uploads() {
+            Ok(u) => u,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to list multipart uploads for cleanup");
+                continue;
+            }
+        };
+
+        let now = chrono::Utc::now();
+        let ttl_duration = chrono::Duration::seconds(ttl as i64);
+
+        for upload in uploads {
+            if upload.created + ttl_duration < now {
+                tracing::info!(
+                    upload_id = %upload.upload_id,
+                    bucket = %upload.bucket,
+                    key = %upload.key,
+                    age_secs = now.signed_duration_since(upload.created).num_seconds(),
+                    "Cleaning up expired multipart upload"
+                );
+                let _ = state.filestore.cleanup_multipart(&upload.upload_id).await;
+                let _ = state.metadata.delete_multipart_upload(&upload.upload_id);
+                metrics::counter!(simples3_server::metrics::MULTIPART_EXPIRED_TOTAL).increment(1);
+            }
+        }
     }
 }
 

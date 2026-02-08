@@ -141,6 +141,8 @@ All configuration is via environment variables. CLI flags (where available) take
 | `SIMPLES3_ADMIN_BIND` | `127.0.0.1:9001` | Address and port for the admin API |
 | `SIMPLES3_ADMIN_TOKEN` | *(none)* | Bearer token required for admin API access (no auth if unset) |
 | `SIMPLES3_INIT_CONFIG` | *(none)* | Path to a TOML init config file for declarative bootstrap (see below) |
+| `SIMPLES3_MULTIPART_TTL` | `86400` | Max age in seconds for incomplete multipart uploads before cleanup (`0` = disabled) |
+| `SIMPLES3_MULTIPART_CLEANUP_INTERVAL` | `3600` | Interval in seconds between multipart cleanup scans |
 
 The server binary also accepts `--bind`, `--data-dir`, `--metadata-dir`, `--hostname`, `--region`, `--admin-bind`, and `--init-config` flags.
 

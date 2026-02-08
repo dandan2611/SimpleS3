@@ -60,8 +60,16 @@ pub async fn metrics_handler(State(state): State<Arc<AppState>>) -> impl IntoRes
         metrics::gauge!("simples3_credential_count").set(creds.len() as f64);
     }
 
-    if let Ok(count) = state.metadata.count_multipart_uploads() {
-        metrics::gauge!("simples3_active_multipart_uploads").set(count as f64);
+    if let Ok(uploads) = state.metadata.list_multipart_uploads() {
+        metrics::gauge!(crate::metrics::MULTIPART_ACTIVE_UPLOADS).set(uploads.len() as f64);
+        let total_parts: usize = uploads.iter().map(|u| u.parts.len()).sum();
+        metrics::gauge!(crate::metrics::MULTIPART_TOTAL_PARTS).set(total_parts as f64);
+        let oldest_age = uploads
+            .iter()
+            .map(|u| chrono::Utc::now().signed_duration_since(u.created).num_seconds().max(0) as f64)
+            .reduce(f64::max)
+            .unwrap_or(0.0);
+        metrics::gauge!(crate::metrics::MULTIPART_OLDEST_AGE_SECONDS).set(oldest_age);
     }
 
     let uptime = state.start_time.elapsed().as_secs_f64();

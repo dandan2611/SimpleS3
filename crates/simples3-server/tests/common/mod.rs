@@ -50,6 +50,8 @@ impl TestServer {
             admin_enabled: true,
             admin_bind: "127.0.0.1:0".into(),
             admin_token,
+            multipart_ttl_secs: 86400,
+            multipart_cleanup_interval_secs: 3600,
         };
 
         let metadata = MetadataStore::open(&config.metadata_dir).unwrap();
