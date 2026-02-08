@@ -1,5 +1,12 @@
 # simples3
 
+[![CI](https://github.com/dandan2611/SimpleS3/actions/workflows/ci.yml/badge.svg)](https://github.com/dandan2611/SimpleS3/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/dandan2611/SimpleS3)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-1.85%2B-orange?logo=rust)](https://www.rust-lang.org)
+[![Docker](https://img.shields.io/badge/ghcr.io-SimpleS3-blue?logo=docker)](https://ghcr.io/dandan2611/SimpleS3)
+[![GitHub last commit](https://img.shields.io/github/last-commit/dandan2611/SimpleS3)](https://github.com/dandan2611/SimpleS3/commits/main)
+[![GitHub repo size](https://img.shields.io/github/repo-size/dandan2611/SimpleS3)](https://github.com/dandan2611/SimpleS3)
+
 A minimal, self-hostable S3-compatible object storage server written in Rust. Designed for development, testing, and lightweight self-hosted deployments where you need standard S3 client compatibility without the operational complexity of full-featured alternatives.
 
 ## Features
