@@ -59,7 +59,7 @@ This produces two binaries in `target/release/`:
 ./target/release/simples3-server
 ```
 
-The server listens on `0.0.0.0:9000` by default.
+The S3 API listens on `0.0.0.0:9000` by default, and the admin API on `127.0.0.1:9001`.
 
 **Create credentials and a bucket:**
 
@@ -113,7 +113,7 @@ docker compose exec simples3 simples3-cli credentials create --description "my k
 docker compose exec simples3 simples3-cli bucket create my-bucket
 ```
 
-The CLI communicates with the server over HTTP by default (connecting to `http://localhost:9000`), so it works while the server is running. No `--server-url` flag is needed unless the server is on a different address.
+The CLI communicates with the admin API over HTTP by default (connecting to `http://localhost:9001`), so it works while the server is running. No `--server-url` flag is needed unless the admin API is on a different address.
 
 ## Configuration
 
@@ -128,72 +128,17 @@ All configuration is via environment variables. CLI flags (where available) take
 | `SIMPLES3_REGION` | `us-east-1` | S3 region returned in responses and used for SigV4 |
 | `SIMPLES3_LOG_LEVEL` | `info` | Log level (`trace`, `debug`, `info`, `warn`, `error`) |
 | `SIMPLES3_ANONYMOUS_GLOBAL` | `false` | Allow anonymous access to all operations without authentication |
+| `SIMPLES3_ADMIN_ENABLED` | `true` | Enable the admin API server (`false` or `0` to disable) |
+| `SIMPLES3_ADMIN_BIND` | `127.0.0.1:9001` | Address and port for the admin API |
+| `SIMPLES3_ADMIN_TOKEN` | *(none)* | Bearer token required for admin API access (no auth if unset) |
 
-The server binary also accepts `--bind`, `--data-dir`, `--metadata-dir`, `--hostname`, and `--region` flags.
+The server binary also accepts `--bind`, `--data-dir`, `--metadata-dir`, `--hostname`, `--region`, and `--admin-bind` flags.
 
-## CLI Reference
+## Admin API & CLI
 
-The CLI has two modes:
+The server exposes a JSON-based admin API under `/_admin/` on a separate port (default `127.0.0.1:9001`), with optional bearer token authentication. The `simples3-cli` tool communicates with this API.
 
-- **Online (default)**: communicates with a running server via the `/_admin/` HTTP API. Use `--server-url` to set the server address (default: `http://localhost:9000`).
-- **Offline** (`--offline`): operates directly on the sled metadata database. Only works when the server is **not** running (sled uses exclusive file locks). Use `--metadata-dir` to point at a custom metadata directory.
-
-### Bucket Management
-
-```bash
-# Create a bucket (online, talking to running server)
-simples3-cli bucket create <name>
-
-# Create a bucket (offline, server must be stopped)
-simples3-cli --offline bucket create <name>
-
-# List all buckets
-simples3-cli bucket list
-
-# Delete an empty bucket
-simples3-cli bucket delete <name>
-
-# Enable anonymous read access on a bucket
-simples3-cli bucket config <name> anonymous true
-
-# Disable anonymous read access
-simples3-cli bucket config <name> anonymous false
-```
-
-### Credential Management
-
-```bash
-# Create a new access key pair
-simples3-cli credentials create --description "my key"
-
-# List all credentials
-simples3-cli credentials list
-
-# Revoke a credential (deactivates it, does not delete)
-simples3-cli credentials revoke <access-key-id>
-```
-
-### CLI Flags
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--server-url` | `http://localhost:9000` | Server URL for online mode |
-| `--offline` | `false` | Use direct sled access instead of HTTP |
-| `--metadata-dir` | from `SIMPLES3_METADATA_DIR` | Metadata directory (offline mode only) |
-
-## Admin HTTP API
-
-The server exposes a JSON-based admin API under `/_admin/`. These endpoints bypass S3 authentication and are intended for management by the CLI or other tools.
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/_admin/buckets` | List all buckets |
-| `PUT` | `/_admin/buckets/{name}` | Create a bucket |
-| `DELETE` | `/_admin/buckets/{name}` | Delete a bucket |
-| `PUT` | `/_admin/buckets/{name}/anonymous` | Set anonymous read (`{"enabled": true}`) |
-| `GET` | `/_admin/credentials` | List all credentials (secrets masked) |
-| `POST` | `/_admin/credentials` | Create a credential (`{"description": "..."}`) |
-| `DELETE` | `/_admin/credentials/{access_key_id}` | Revoke a credential |
+See **[ADMIN.md](ADMIN.md)** for full documentation: endpoints, CLI reference, configuration, and examples.
 
 ## Anonymous Access
 
@@ -264,13 +209,13 @@ simples3/
 - **sled for metadata**: pure Rust embedded database with no C dependencies, good for prefix scans needed by object listings.
 - **Filesystem for object data**: objects stored at `data/<bucket>/<key>`, multipart parts at `data/.multipart/<upload_id>/part-<N>`. Writes are atomic via temp file + rename.
 - **SigV4 from scratch**: ~100 lines for verification only, avoids pulling the full AWS SDK as a dependency.
-- **Admin HTTP API**: the `/_admin/` endpoints bypass S3 auth and allow the CLI to manage the server while it's running. Direct sled access is available via `--offline` when the server is stopped.
-- **Two route groups**: admin routes (`/_admin/`) are nested without auth middleware; S3 routes use a fallback with auth + host-rewrite middleware.
+- **Admin HTTP API**: the `/_admin/` endpoints run on a separate port with optional bearer token auth, allowing the CLI to manage the server while it's running. Direct sled access is available via `--offline` when the server is stopped.
+- **Dual-listener architecture**: the S3 API and admin API run on separate ports with separate routers. Admin routes have optional bearer token auth; S3 routes use SigV4 auth + host-rewrite middleware.
 
 ## Testing
 
 ```bash
-# Run all tests (44 unit + 37 integration)
+# Run all tests (44 unit + 39 integration)
 cargo test --workspace
 
 # Run only core library unit tests
@@ -299,7 +244,7 @@ cargo test -p simples3-server
 - Authentication: unauthenticated denied, anonymous read on enabled bucket, anonymous write denied
 - Virtual-host: head bucket, put via virtual-host + get via path-style
 - Multipart: full lifecycle via metadata store
-- Admin API: bucket CRUD, set-anonymous, credential CRUD, auth bypass verification
+- Admin API: bucket CRUD, set-anonymous, credential CRUD, port isolation, bearer token auth
 
 ## License
 

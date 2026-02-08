@@ -1,4 +1,5 @@
 use crate::handlers;
+use crate::middleware::admin_auth::admin_auth_middleware;
 use crate::middleware::auth::auth_middleware;
 use crate::middleware::host_rewrite::host_rewrite_middleware;
 use crate::AppState;
@@ -139,8 +140,21 @@ fn percent_decode(s: &str) -> String {
 
 use axum::response::IntoResponse;
 
-pub fn build_router(state: Arc<AppState>) -> Router {
-    // Admin routes — no auth, no host-rewrite
+pub fn build_s3_router(state: Arc<AppState>) -> Router {
+    Router::new()
+        .fallback(s3_dispatcher)
+        .layer(axum_mw::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ))
+        .layer(axum_mw::from_fn_with_state(
+            state.clone(),
+            host_rewrite_middleware,
+        ))
+        .with_state(state)
+}
+
+pub fn build_admin_router(state: Arc<AppState>) -> Router {
     let admin_routes = Router::new()
         .route("/buckets", get(handlers::admin::admin_list_buckets))
         .route(
@@ -161,22 +175,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/credentials/{access_key_id}",
             delete(handlers::admin::admin_revoke_credential),
         )
-        .with_state(state.clone());
-
-    // S3 routes — with auth and host-rewrite middleware
-    let s3_routes = Router::new()
-        .fallback(s3_dispatcher)
         .layer(axum_mw::from_fn_with_state(
             state.clone(),
-            auth_middleware,
-        ))
-        .layer(axum_mw::from_fn_with_state(
-            state.clone(),
-            host_rewrite_middleware,
+            admin_auth_middleware,
         ))
         .with_state(state);
 
-    Router::new()
-        .nest("/_admin", admin_routes)
-        .merge(s3_routes)
+    Router::new().nest("/_admin", admin_routes)
 }

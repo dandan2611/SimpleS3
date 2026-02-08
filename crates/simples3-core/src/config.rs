@@ -10,6 +10,9 @@ pub struct Config {
     pub region: String,
     pub log_level: String,
     pub anonymous_global: bool,
+    pub admin_enabled: bool,
+    pub admin_bind: String,
+    pub admin_token: Option<String>,
 }
 
 impl Config {
@@ -26,6 +29,14 @@ impl Config {
             anonymous_global: env::var("SIMPLES3_ANONYMOUS_GLOBAL")
                 .map(|v| v == "true" || v == "1")
                 .unwrap_or(false),
+            admin_enabled: env::var("SIMPLES3_ADMIN_ENABLED")
+                .map(|v| v != "false" && v != "0")
+                .unwrap_or(true),
+            admin_bind: env::var("SIMPLES3_ADMIN_BIND")
+                .unwrap_or_else(|_| "127.0.0.1:9001".into()),
+            admin_token: env::var("SIMPLES3_ADMIN_TOKEN")
+                .ok()
+                .filter(|s| !s.is_empty()),
         }
     }
 }
@@ -40,6 +51,9 @@ impl Default for Config {
             region: "us-east-1".into(),
             log_level: "info".into(),
             anonymous_global: false,
+            admin_enabled: true,
+            admin_bind: "127.0.0.1:9001".into(),
+            admin_token: None,
         }
     }
 }

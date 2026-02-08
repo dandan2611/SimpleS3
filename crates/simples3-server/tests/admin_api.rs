@@ -10,7 +10,7 @@ async fn test_admin_create_and_list_buckets() {
 
     // Create bucket via admin API
     let resp = client
-        .put(format!("{}/_admin/buckets/admin-bucket", server.base_url))
+        .put(format!("{}/_admin/buckets/admin-bucket", server.admin_base_url))
         .send()
         .await
         .unwrap();
@@ -18,7 +18,7 @@ async fn test_admin_create_and_list_buckets() {
 
     // List buckets via admin API
     let resp = client
-        .get(format!("{}/_admin/buckets", server.base_url))
+        .get(format!("{}/_admin/buckets", server.admin_base_url))
         .send()
         .await
         .unwrap();
@@ -34,20 +34,20 @@ async fn test_admin_delete_bucket() {
     let client = reqwest::Client::new();
 
     client
-        .put(format!("{}/_admin/buckets/del-me", server.base_url))
+        .put(format!("{}/_admin/buckets/del-me", server.admin_base_url))
         .send()
         .await
         .unwrap();
 
     let resp = client
-        .delete(format!("{}/_admin/buckets/del-me", server.base_url))
+        .delete(format!("{}/_admin/buckets/del-me", server.admin_base_url))
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), 204);
 
     let resp = client
-        .get(format!("{}/_admin/buckets", server.base_url))
+        .get(format!("{}/_admin/buckets", server.admin_base_url))
         .send()
         .await
         .unwrap();
@@ -61,7 +61,7 @@ async fn test_admin_set_anonymous() {
     let client = reqwest::Client::new();
 
     client
-        .put(format!("{}/_admin/buckets/anon-test", server.base_url))
+        .put(format!("{}/_admin/buckets/anon-test", server.admin_base_url))
         .send()
         .await
         .unwrap();
@@ -69,7 +69,7 @@ async fn test_admin_set_anonymous() {
     let resp = client
         .put(format!(
             "{}/_admin/buckets/anon-test/anonymous",
-            server.base_url
+            server.admin_base_url
         ))
         .json(&serde_json::json!({ "enabled": true }))
         .send()
@@ -78,7 +78,7 @@ async fn test_admin_set_anonymous() {
     assert_eq!(resp.status(), 200);
 
     let resp = client
-        .get(format!("{}/_admin/buckets", server.base_url))
+        .get(format!("{}/_admin/buckets", server.admin_base_url))
         .send()
         .await
         .unwrap();
@@ -93,7 +93,7 @@ async fn test_admin_create_and_list_credentials() {
 
     // Create credential via admin API
     let resp = client
-        .post(format!("{}/_admin/credentials", server.base_url))
+        .post(format!("{}/_admin/credentials", server.admin_base_url))
         .json(&serde_json::json!({ "description": "test key" }))
         .send()
         .await
@@ -105,7 +105,7 @@ async fn test_admin_create_and_list_credentials() {
 
     // List credentials (should have 2: the test fixture one + the new one)
     let resp = client
-        .get(format!("{}/_admin/credentials", server.base_url))
+        .get(format!("{}/_admin/credentials", server.admin_base_url))
         .send()
         .await
         .unwrap();
@@ -123,7 +123,7 @@ async fn test_admin_revoke_credential() {
 
     // Create credential
     let resp = client
-        .post(format!("{}/_admin/credentials", server.base_url))
+        .post(format!("{}/_admin/credentials", server.admin_base_url))
         .json(&serde_json::json!({ "description": "to revoke" }))
         .send()
         .await
@@ -133,7 +133,7 @@ async fn test_admin_revoke_credential() {
 
     // Revoke it
     let resp = client
-        .delete(format!("{}/_admin/credentials/{}", server.base_url, akid))
+        .delete(format!("{}/_admin/credentials/{}", server.admin_base_url, akid))
         .send()
         .await
         .unwrap();
@@ -141,7 +141,7 @@ async fn test_admin_revoke_credential() {
 
     // Verify it's inactive
     let resp = client
-        .get(format!("{}/_admin/credentials", server.base_url))
+        .get(format!("{}/_admin/credentials", server.admin_base_url))
         .send()
         .await
         .unwrap();
@@ -151,21 +151,76 @@ async fn test_admin_revoke_credential() {
 }
 
 #[tokio::test]
-async fn test_admin_api_bypasses_s3_auth() {
-    // Admin API should work even without anonymous_global or SigV4 credentials
+async fn test_admin_api_not_on_s3_port() {
+    // Admin routes should NOT be served on the S3 port
     let server = TestServer::start().await;
     let client = reqwest::Client::new();
 
-    // This should work (admin API has no auth) even though the server
-    // is NOT in anonymous_global mode
+    // Admin on admin port works
     let resp = client
-        .get(format!("{}/_admin/buckets", server.base_url))
+        .get(format!("{}/_admin/buckets", server.admin_base_url))
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
 
-    // But S3 API should still require auth
+    // Admin on S3 port should fail (S3 auth error or not found)
+    let resp = client
+        .get(format!("{}/_admin/buckets", server.base_url))
+        .send()
+        .await
+        .unwrap();
+    // S3 port doesn't have admin routes, so this hits the S3 fallback dispatcher
+    // which will return a 403 (auth required) or some S3 error — not a 200
+    assert_ne!(resp.status(), 200);
+
+    // S3 API should still require auth on S3 port
     let resp = client.get(&server.base_url).send().await.unwrap();
     assert_eq!(resp.status(), 403);
+}
+
+#[tokio::test]
+async fn test_admin_token_required_when_configured() {
+    let server = TestServer::start_with_admin_token("supersecret").await;
+    let client = reqwest::Client::new();
+
+    // Without token → 401
+    let resp = client
+        .get(format!("{}/_admin/buckets", server.admin_base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 401);
+
+    // With wrong token → 401
+    let resp = client
+        .get(format!("{}/_admin/buckets", server.admin_base_url))
+        .header("Authorization", "Bearer wrongtoken")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 401);
+
+    // With correct token → 200
+    let resp = client
+        .get(format!("{}/_admin/buckets", server.admin_base_url))
+        .header("Authorization", "Bearer supersecret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+}
+
+#[tokio::test]
+async fn test_admin_no_token_when_unconfigured() {
+    let server = TestServer::start().await;
+    let client = reqwest::Client::new();
+
+    // No token configured → admin accessible without auth
+    let resp = client
+        .get(format!("{}/_admin/buckets", server.admin_base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
 }

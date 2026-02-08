@@ -26,6 +26,10 @@ struct Cli {
     /// S3 region (overrides SIMPLES3_REGION)
     #[arg(long)]
     region: Option<String>,
+
+    /// Admin API bind address (overrides SIMPLES3_ADMIN_BIND)
+    #[arg(long)]
+    admin_bind: Option<String>,
 }
 
 #[tokio::main]
@@ -48,6 +52,9 @@ async fn main() {
     if let Some(region) = cli.region {
         config.region = region;
     }
+    if let Some(admin_bind) = cli.admin_bind {
+        config.admin_bind = admin_bind;
+    }
 
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -69,17 +76,40 @@ async fn main() {
         filestore,
     });
 
-    let app = router::build_router(state);
-
-    let listener = tokio::net::TcpListener::bind(&config.bind)
+    let s3_app = router::build_s3_router(state.clone());
+    let s3_listener = tokio::net::TcpListener::bind(&config.bind)
         .await
-        .expect("Failed to bind");
-    tracing::info!("simples3 listening on {}", config.bind);
+        .expect("Failed to bind S3 listener");
+    tracing::info!("simples3 S3 API listening on {}", config.bind);
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .expect("Server error");
+    if config.admin_enabled {
+        let admin_app = router::build_admin_router(state);
+        let admin_listener = tokio::net::TcpListener::bind(&config.admin_bind)
+            .await
+            .expect("Failed to bind admin listener");
+        tracing::info!("simples3 admin API listening on {}", config.admin_bind);
+
+        let s3_handle = tokio::spawn(async move {
+            axum::serve(s3_listener, s3_app)
+                .with_graceful_shutdown(shutdown_signal())
+                .await
+                .expect("S3 server error");
+        });
+
+        let admin_handle = tokio::spawn(async move {
+            axum::serve(admin_listener, admin_app).await.expect("Admin server error");
+        });
+
+        // Wait for S3 server to finish (shutdown signal), then drop admin
+        let _ = s3_handle.await;
+        admin_handle.abort();
+    } else {
+        tracing::info!("Admin API is disabled");
+        axum::serve(s3_listener, s3_app)
+            .with_graceful_shutdown(shutdown_signal())
+            .await
+            .expect("S3 server error");
+    }
 }
 
 async fn shutdown_signal() {

@@ -6,9 +6,13 @@ mod commands;
 #[derive(Parser)]
 #[command(name = "simples3-cli", about = "simples3 admin CLI")]
 struct Cli {
-    /// Server URL to connect to (default: http://localhost:9000)
-    #[arg(long, default_value = "http://localhost:9000")]
+    /// Admin API URL to connect to
+    #[arg(long, default_value = "http://localhost:9001", env = "SIMPLES3_ADMIN_URL")]
     server_url: String,
+
+    /// Bearer token for admin API authentication
+    #[arg(long, env = "SIMPLES3_ADMIN_TOKEN")]
+    admin_token: Option<String>,
 
     /// Operate directly on the sled database instead of via HTTP.
     /// Only works when the server is NOT running (sled uses exclusive locks).
@@ -122,7 +126,21 @@ fn run_offline(cli: Cli) {
 
 async fn run_online(cli: Cli) {
     let base = cli.server_url.trim_end_matches('/').to_string();
-    let client = reqwest::Client::new();
+
+    let client = if let Some(ref token) = cli.admin_token {
+        let mut headers = reqwest::header::HeaderMap::new();
+        let value = format!("Bearer {}", token);
+        headers.insert(
+            reqwest::header::AUTHORIZATION,
+            reqwest::header::HeaderValue::from_str(&value).expect("Invalid admin token"),
+        );
+        reqwest::Client::builder()
+            .default_headers(headers)
+            .build()
+            .expect("Failed to build HTTP client")
+    } else {
+        reqwest::Client::new()
+    };
 
     match cli.command {
         Commands::Bucket { action } => match action {
