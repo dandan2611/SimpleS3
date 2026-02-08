@@ -1,0 +1,33 @@
+[package]
+name = "simples3-server"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+simples3-core = { path = "../simples3-core" }
+tokio = { workspace = true }
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+http = "1"
+clap = { version = "4", features = ["derive"] }
+chrono = { workspace = true }
+uuid = { workspace = true }
+quick-xml = { workspace = true }
+tokio-util = { version = "0.7", features = ["io"] }
+percent-encoding = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+reqwest = { version = "0.12", default-features = false }
+tokio = { workspace = true, features = ["test-util", "macros"] }
+simples3-core = { path = "../simples3-core" }
+chrono = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }
+hex = { workspace = true }
+percent-encoding = { workspace = true }

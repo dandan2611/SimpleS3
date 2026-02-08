@@ -1,0 +1,18 @@
+services:
+  simples3:
+    build: .
+    ports:
+      - "9000:9000"
+    volumes:
+      - simples3-data:/data
+      - simples3-metadata:/metadata
+    environment:
+      - SIMPLES3_BIND=0.0.0.0:9000
+      - SIMPLES3_HOSTNAME=s3.localhost
+      - SIMPLES3_REGION=us-east-1
+      - SIMPLES3_LOG_LEVEL=info
+#      - SIMPLES3_ANONYMOUS_GLOBAL=true
+
+volumes:
+  simples3-data:
+  simples3-metadata:
