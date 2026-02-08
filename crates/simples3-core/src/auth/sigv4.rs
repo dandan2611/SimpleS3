@@ -27,7 +27,7 @@ pub fn parse_auth_header(header: &str) -> Result<SigV4Auth, S3Error> {
     let mut signed_headers = None;
     let mut signature = None;
 
-    for part in header.split(", ") {
+    for part in header.split(',') {
         let part = part.trim();
         if let Some(val) = part.strip_prefix("Credential=") {
             credential = Some(val);

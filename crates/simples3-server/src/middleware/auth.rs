@@ -109,24 +109,37 @@ pub async fn auth_middleware(
     let auth_header = match request.headers().get("authorization") {
         Some(val) => match val.to_str() {
             Ok(s) => s.to_string(),
-            Err(_) => return simples3_core::S3Error::AccessDenied.into_response(),
+            Err(_) => {
+                tracing::debug!("Auth failed: authorization header is not valid UTF-8");
+                return simples3_core::S3Error::AccessDenied.into_response();
+            }
         },
-        None => return simples3_core::S3Error::AccessDenied.into_response(),
+        None => {
+            tracing::debug!(method = %method, path = %path, "Auth failed: no authorization header");
+            return simples3_core::S3Error::AccessDenied.into_response();
+        }
     };
 
     // Parse SigV4
     let auth = match sigv4::parse_auth_header(&auth_header) {
         Ok(a) => a,
-        Err(e) => return e.into_response(),
+        Err(e) => {
+            tracing::debug!(auth_header = %auth_header, "Auth failed: could not parse SigV4 auth header");
+            return e.into_response();
+        }
     };
 
     // Look up credential
     let credential = match state.metadata.get_credential(&auth.access_key_id) {
         Ok(c) => c,
-        Err(e) => return e.into_response(),
+        Err(e) => {
+            tracing::debug!(access_key_id = %auth.access_key_id, "Auth failed: credential not found");
+            return e.into_response();
+        }
     };
 
     if !credential.active {
+        tracing::debug!(access_key_id = %auth.access_key_id, "Auth failed: credential is revoked");
         return simples3_core::S3Error::AccessDenied.into_response();
     }
 
@@ -181,7 +194,18 @@ pub async fn auth_middleware(
         &payload_hash,
     ) {
         Ok(()) => next.run(request).await,
-        Err(e) => e.into_response(),
+        Err(e) => {
+            tracing::debug!(
+                method = %method,
+                path = %path,
+                access_key_id = %auth.access_key_id,
+                signed_headers = ?auth.signed_headers,
+                payload_hash = %payload_hash,
+                canonical_query = %canonical_query,
+                "Auth failed: signature mismatch"
+            );
+            e.into_response()
+        }
     }
 }
 

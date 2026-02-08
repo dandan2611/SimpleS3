@@ -12,7 +12,7 @@ services:
       - SIMPLES3_ADMIN_BIND=0.0.0.0:9001
       - SIMPLES3_HOSTNAME=s3.localhost
       - SIMPLES3_REGION=us-east-1
-      - SIMPLES3_LOG_LEVEL=info
+      - SIMPLES3_LOG_LEVEL=trace
     healthcheck:
       test: ["CMD", "wget", "-q", "-O-", "http://localhost:9001/health"]
       interval: 15s
