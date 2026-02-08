@@ -131,8 +131,37 @@ All configuration is via environment variables. CLI flags (where available) take
 | `SIMPLES3_ADMIN_ENABLED` | `true` | Enable the admin API server (`false` or `0` to disable) |
 | `SIMPLES3_ADMIN_BIND` | `127.0.0.1:9001` | Address and port for the admin API |
 | `SIMPLES3_ADMIN_TOKEN` | *(none)* | Bearer token required for admin API access (no auth if unset) |
+| `SIMPLES3_INIT_CONFIG` | *(none)* | Path to a TOML init config file for declarative bootstrap (see below) |
 
-The server binary also accepts `--bind`, `--data-dir`, `--metadata-dir`, `--hostname`, `--region`, and `--admin-bind` flags.
+The server binary also accepts `--bind`, `--data-dir`, `--metadata-dir`, `--hostname`, `--region`, `--admin-bind`, and `--init-config` flags.
+
+## Init Config (Zero-Command Bootstrap)
+
+You can declaratively provision buckets and credentials at startup using a TOML init config file. This is ideal for Docker and automated deployments — no CLI commands or admin API calls needed.
+
+Set the file path via `--init-config` flag or `SIMPLES3_INIT_CONFIG` env var. The init file is **idempotent** — safe to run on every boot; existing items are silently skipped.
+
+```toml
+[[buckets]]
+name = "my-bucket"
+
+[[buckets]]
+name = "public-assets"
+anonymous_read = true
+
+[[credentials]]
+access_key_id = "AKID_CI_PIPELINE"
+secret_access_key = "supersecretkey123"
+description = "CI pipeline"
+```
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `buckets[].name` | yes | | Bucket name |
+| `buckets[].anonymous_read` | no | `false` | Enable anonymous read access |
+| `credentials[].access_key_id` | yes | | Access key ID |
+| `credentials[].secret_access_key` | yes | | Secret access key |
+| `credentials[].description` | no | `""` | Human-readable description |
 
 ## Admin API & CLI
 
@@ -215,7 +244,7 @@ simples3/
 ## Testing
 
 ```bash
-# Run all tests (44 unit + 39 integration)
+# Run all tests (49 unit + 41 integration)
 cargo test --workspace
 
 # Run only core library unit tests
@@ -245,6 +274,7 @@ cargo test -p simples3-server
 - Virtual-host: head bucket, put via virtual-host + get via path-style
 - Multipart: full lifecycle via metadata store
 - Admin API: bucket CRUD, set-anonymous, credential CRUD, port isolation, bearer token auth
+- Init config: bootstrap from TOML file, idempotent re-apply
 
 ## License
 

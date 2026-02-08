@@ -1,6 +1,7 @@
 use clap::Parser;
 use simples3_core::Config;
 use simples3_server::{AppState, router};
+use std::path::Path;
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
@@ -30,6 +31,10 @@ struct Cli {
     /// Admin API bind address (overrides SIMPLES3_ADMIN_BIND)
     #[arg(long)]
     admin_bind: Option<String>,
+
+    /// Path to init config TOML file (overrides SIMPLES3_INIT_CONFIG)
+    #[arg(long, env = "SIMPLES3_INIT_CONFIG")]
+    init_config: Option<String>,
 }
 
 #[tokio::main]
@@ -69,6 +74,14 @@ async fn main() {
     let metadata =
         simples3_core::storage::MetadataStore::open(&config.metadata_dir).expect("Failed to open metadata store");
     let filestore = simples3_core::storage::FileStore::new(&config.data_dir);
+
+    if let Some(ref init_path) = cli.init_config {
+        let init_cfg = simples3_core::init::load(Path::new(init_path))
+            .expect("Failed to load init config");
+        simples3_core::init::apply(&init_cfg, &metadata)
+            .expect("Failed to apply init config");
+        tracing::info!(path = %init_path, "Init config applied successfully");
+    }
 
     let state = Arc::new(AppState {
         config: config.clone(),

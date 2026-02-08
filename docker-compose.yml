@@ -16,6 +16,9 @@ services:
 #      - SIMPLES3_ANONYMOUS_GLOBAL=true
 #      - SIMPLES3_ADMIN_TOKEN=
 #      - SIMPLES3_ADMIN_ENABLED=true
+#      - SIMPLES3_INIT_CONFIG=/config/init.toml
+#    volumes:
+#      - ./init.toml:/config/init.toml:ro
 
 volumes:
   simples3-data:

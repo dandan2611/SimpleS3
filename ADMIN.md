@@ -128,6 +128,57 @@ Revokes a credential (deactivates it without deleting). Returns `200 OK` on succ
 curl -X DELETE http://localhost:9001/_admin/credentials/AKXXXXXXXXXXXXXXXX
 ```
 
+## Bootstrap / Init Config
+
+Instead of manually creating buckets and credentials via CLI or API, you can provide a TOML init config file that the server reads on boot. This is useful for Docker, CI, and automated deployments.
+
+Set the path via `--init-config` flag or `SIMPLES3_INIT_CONFIG` env var. If unset, no init file is loaded.
+
+### Format
+
+```toml
+[[buckets]]
+name = "my-bucket"
+
+[[buckets]]
+name = "public-assets"
+anonymous_read = true
+
+[[credentials]]
+access_key_id = "AKID_CI_PIPELINE"
+secret_access_key = "supersecretkey123"
+description = "CI pipeline"
+
+[[credentials]]
+access_key_id = "AKID_DEV"
+secret_access_key = "devkey456"
+description = "Development"
+```
+
+### Fields
+
+**`[[buckets]]`**
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `name` | yes | | Bucket name |
+| `anonymous_read` | no | `false` | Enable anonymous read access on this bucket |
+
+**`[[credentials]]`**
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `access_key_id` | yes | | Access key ID |
+| `secret_access_key` | yes | | Secret access key |
+| `description` | no | `""` | Human-readable description |
+
+### Behavior
+
+- The init file is applied **before** the server starts accepting requests.
+- It is **idempotent**: if a bucket or credential already exists, it is silently skipped. This makes it safe to use on every boot.
+- Buckets that already exist but have a different `anonymous_read` setting will be updated to match the config.
+- Created items are logged at `info` level; skipped items at `debug` level.
+
 ## CLI Reference
 
 The CLI has two modes:

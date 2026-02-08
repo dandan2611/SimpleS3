@@ -1,6 +1,7 @@
 use simples3_core::Config;
 use simples3_core::storage::{FileStore, MetadataStore};
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::Arc;
 
 pub struct TestServer {
@@ -15,18 +16,26 @@ pub struct TestServer {
 
 impl TestServer {
     pub async fn start() -> Self {
-        Self::start_inner(false, None).await
+        Self::start_inner(false, None, None).await
     }
 
     pub async fn start_anonymous() -> Self {
-        Self::start_inner(true, None).await
+        Self::start_inner(true, None, None).await
     }
 
     pub async fn start_with_admin_token(token: &str) -> Self {
-        Self::start_inner(false, Some(token.to_string())).await
+        Self::start_inner(false, Some(token.to_string()), None).await
     }
 
-    async fn start_inner(anonymous_global: bool, admin_token: Option<String>) -> Self {
+    pub async fn start_with_init_config(init_config_path: &Path) -> Self {
+        Self::start_inner(false, None, Some(init_config_path.to_path_buf())).await
+    }
+
+    async fn start_inner(
+        anonymous_global: bool,
+        admin_token: Option<String>,
+        init_config_path: Option<std::path::PathBuf>,
+    ) -> Self {
         let data_dir = tempfile::tempdir().unwrap();
         let metadata_dir = tempfile::tempdir().unwrap();
 
@@ -46,9 +55,13 @@ impl TestServer {
         let metadata = MetadataStore::open(&config.metadata_dir).unwrap();
         let filestore = FileStore::new(&config.data_dir);
 
-        metadata
-            .create_credential("TESTAKID", "TESTSECRET", "test")
-            .unwrap();
+        if let Some(ref path) = init_config_path {
+            let init_cfg = simples3_core::init::load(path).expect("Failed to load init config");
+            simples3_core::init::apply(&init_cfg, &metadata).expect("Failed to apply init config");
+        }
+
+        // Ignore error if credential already exists (e.g. from init config)
+        let _ = metadata.create_credential("TESTAKID", "TESTSECRET", "test");
 
         let state = Arc::new(simples3_server::AppState {
             config,

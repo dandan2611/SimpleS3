@@ -237,6 +237,9 @@ impl MetadataStore {
 
     pub fn create_credential(&self, access_key_id: &str, secret_access_key: &str, description: &str) -> Result<AccessKeyRecord, S3Error> {
         let tree = self.db.open_tree(CREDENTIALS_TREE).map_err(|e| S3Error::InternalError(e.to_string()))?;
+        if tree.contains_key(access_key_id).map_err(|e| S3Error::InternalError(e.to_string()))? {
+            return Err(S3Error::InvalidArgument("Credential already exists".into()));
+        }
         let record = AccessKeyRecord {
             access_key_id: access_key_id.to_string(),
             secret_access_key: secret_access_key.to_string(),
