@@ -12,6 +12,7 @@ struct BucketInfo {
     name: String,
     creation_date: String,
     anonymous_read: bool,
+    anonymous_list_public: bool,
 }
 
 #[derive(Serialize)]
@@ -59,6 +60,7 @@ pub async fn admin_list_buckets(State(state): State<Arc<AppState>>) -> Response<
                     name: b.name,
                     creation_date: b.creation_date.to_rfc3339(),
                     anonymous_read: b.anonymous_read,
+                    anonymous_list_public: b.anonymous_list_public,
                 })
                 .collect();
             Json(infos).into_response()
@@ -146,6 +148,17 @@ pub async fn admin_revoke_credential(
     Path(access_key_id): Path<String>,
 ) -> Response<Body> {
     match state.metadata.revoke_credential(&access_key_id) {
+        Ok(()) => StatusCode::OK.into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+pub async fn admin_set_anonymous_list_public(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    Json(body): Json<SetAnonymousRequest>,
+) -> Response<Body> {
+    match state.metadata.set_bucket_anonymous_list_public(&name, body.enabled) {
         Ok(()) => StatusCode::OK.into_response(),
         Err(e) => e.into_response(),
     }

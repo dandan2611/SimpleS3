@@ -30,6 +30,19 @@ pub async fn put_object(
         .unwrap_or("application/octet-stream")
         .to_string();
 
+    // Parse x-amz-acl header
+    let public = match request.headers().get("x-amz-acl").and_then(|v| v.to_str().ok()) {
+        Some("public-read") => true,
+        Some("private") | None => false,
+        Some(other) => {
+            return simples3_core::S3Error::InvalidArgument(format!(
+                "Unsupported x-amz-acl value: {}",
+                other
+            ))
+            .into_response();
+        }
+    };
+
     // Stream body to disk
     let body_bytes = match axum::body::to_bytes(request.into_body(), usize::MAX).await {
         Ok(b) => b,
@@ -50,6 +63,7 @@ pub async fn put_object(
         etag: etag.clone(),
         content_type,
         last_modified: Utc::now(),
+        public,
     };
 
     if let Err(e) = state.metadata.put_object_meta(&meta) {
@@ -126,6 +140,7 @@ pub async fn list_objects_v2(
     state: Arc<AppState>,
     bucket: &str,
     query: &HashMap<String, String>,
+    public_only: bool,
 ) -> Response<Body> {
     // Verify bucket exists
     if let Err(e) = state.metadata.get_bucket(bucket) {
@@ -151,7 +166,11 @@ pub async fn list_objects_v2(
     };
 
     match state.metadata.list_objects_v2(&req) {
-        Ok(resp) => {
+        Ok(mut resp) => {
+            if public_only {
+                resp.contents.retain(|obj| obj.public);
+                resp.key_count = resp.contents.len() as u32;
+            }
             let body = xml::list_objects_v2_xml(&resp);
             (
                 StatusCode::OK,
@@ -273,6 +292,20 @@ pub async fn copy_object(
     dest_key: &str,
     request: Request<Body>,
 ) -> Response<Body> {
+    // Parse x-amz-acl header (if absent, inherit from source)
+    let acl_override = match request.headers().get("x-amz-acl").and_then(|v| v.to_str().ok()) {
+        Some("public-read") => Some(true),
+        Some("private") => Some(false),
+        None => None,
+        Some(other) => {
+            return simples3_core::S3Error::InvalidArgument(format!(
+                "Unsupported x-amz-acl value: {}",
+                other
+            ))
+            .into_response();
+        }
+    };
+
     let copy_source = match request.headers().get("x-amz-copy-source") {
         Some(v) => match v.to_str() {
             Ok(s) => s.to_string(),
@@ -329,6 +362,7 @@ pub async fn copy_object(
         etag: etag.clone(),
         content_type: src_meta.content_type,
         last_modified: now,
+        public: acl_override.unwrap_or(src_meta.public),
     };
 
     if let Err(e) = state.metadata.put_object_meta(&dest_meta) {
@@ -435,6 +469,60 @@ pub async fn delete_objects(
     }
 
     let body = xml::delete_objects_result_xml(&deleted, &errors, quiet);
+    (
+        StatusCode::OK,
+        [("content-type", "application/xml")],
+        body,
+    )
+        .into_response()
+}
+
+// --- ACL handlers ---
+
+pub async fn put_object_acl(
+    state: Arc<AppState>,
+    bucket: &str,
+    key: &str,
+    request: Request<Body>,
+) -> Response<Body> {
+    let acl = match request.headers().get("x-amz-acl").and_then(|v| v.to_str().ok()) {
+        Some("public-read") => true,
+        Some("private") => false,
+        None => false,
+        Some(other) => {
+            return simples3_core::S3Error::InvalidArgument(format!(
+                "Unsupported x-amz-acl value: {}",
+                other
+            ))
+            .into_response();
+        }
+    };
+
+    let mut meta = match state.metadata.get_object_meta(bucket, key) {
+        Ok(m) => m,
+        Err(e) => return e.into_response(),
+    };
+
+    meta.public = acl;
+
+    if let Err(e) = state.metadata.put_object_meta(&meta) {
+        return e.into_response();
+    }
+
+    StatusCode::OK.into_response()
+}
+
+pub async fn get_object_acl(
+    state: Arc<AppState>,
+    bucket: &str,
+    key: &str,
+) -> Response<Body> {
+    let meta = match state.metadata.get_object_meta(bucket, key) {
+        Ok(m) => m,
+        Err(e) => return e.into_response(),
+    };
+
+    let body = xml::get_object_acl_xml(meta.public);
     (
         StatusCode::OK,
         [("content-type", "application/xml")],

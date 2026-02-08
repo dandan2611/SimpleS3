@@ -440,3 +440,179 @@ async fn test_delete_objects_nonexistent_keys() {
     // Nonexistent keys are treated as successful deletes
     assert!(body.contains("<Deleted>"));
 }
+
+// --- ACL tests ---
+
+#[tokio::test]
+async fn test_put_object_with_public_read_acl() {
+    let server = TestServer::start_anonymous().await;
+    let client = reqwest::Client::new();
+    create_bucket(&client, &server.base_url, "acl-bucket").await;
+
+    let resp = client
+        .put(format!("{}/acl-bucket/public.txt", server.base_url))
+        .header("x-amz-acl", "public-read")
+        .body("public data")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // Verify ACL via GetObjectAcl
+    let resp = client
+        .get(format!("{}/acl-bucket/public.txt?acl", server.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("AllUsers"));
+    assert!(body.contains("<Permission>READ</Permission>"));
+}
+
+#[tokio::test]
+async fn test_get_object_acl_private() {
+    let server = TestServer::start_anonymous().await;
+    let client = reqwest::Client::new();
+    create_bucket(&client, &server.base_url, "acl-priv").await;
+
+    client
+        .put(format!("{}/acl-priv/private.txt", server.base_url))
+        .body("private data")
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .get(format!("{}/acl-priv/private.txt?acl", server.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("FULL_CONTROL"));
+    assert!(!body.contains("AllUsers"));
+}
+
+#[tokio::test]
+async fn test_put_object_acl_toggle() {
+    let server = TestServer::start_anonymous().await;
+    let client = reqwest::Client::new();
+    create_bucket(&client, &server.base_url, "acl-toggle").await;
+
+    client
+        .put(format!("{}/acl-toggle/file.txt", server.base_url))
+        .body("data")
+        .send()
+        .await
+        .unwrap();
+
+    // Initially private
+    let resp = client
+        .get(format!("{}/acl-toggle/file.txt?acl", server.base_url))
+        .send()
+        .await
+        .unwrap();
+    let body = resp.text().await.unwrap();
+    assert!(!body.contains("AllUsers"));
+
+    // Set to public-read
+    let resp = client
+        .put(format!("{}/acl-toggle/file.txt?acl", server.base_url))
+        .header("x-amz-acl", "public-read")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // Verify now public
+    let resp = client
+        .get(format!("{}/acl-toggle/file.txt?acl", server.base_url))
+        .send()
+        .await
+        .unwrap();
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("AllUsers"));
+
+    // Set back to private
+    let resp = client
+        .put(format!("{}/acl-toggle/file.txt?acl", server.base_url))
+        .header("x-amz-acl", "private")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let resp = client
+        .get(format!("{}/acl-toggle/file.txt?acl", server.base_url))
+        .send()
+        .await
+        .unwrap();
+    let body = resp.text().await.unwrap();
+    assert!(!body.contains("AllUsers"));
+}
+
+#[tokio::test]
+async fn test_invalid_acl_value_rejected() {
+    let server = TestServer::start_anonymous().await;
+    let client = reqwest::Client::new();
+    create_bucket(&client, &server.base_url, "acl-invalid").await;
+
+    let resp = client
+        .put(format!("{}/acl-invalid/file.txt", server.base_url))
+        .header("x-amz-acl", "authenticated-read")
+        .body("data")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+async fn test_copy_object_inherits_source_acl() {
+    let server = TestServer::start_anonymous().await;
+    let client = reqwest::Client::new();
+    create_bucket(&client, &server.base_url, "acl-copy").await;
+
+    // Upload public source
+    client
+        .put(format!("{}/acl-copy/src.txt", server.base_url))
+        .header("x-amz-acl", "public-read")
+        .body("data")
+        .send()
+        .await
+        .unwrap();
+
+    // Copy without ACL header — should inherit public
+    client
+        .put(format!("{}/acl-copy/dst.txt", server.base_url))
+        .header("x-amz-copy-source", "/acl-copy/src.txt")
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .get(format!("{}/acl-copy/dst.txt?acl", server.base_url))
+        .send()
+        .await
+        .unwrap();
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("AllUsers"));
+
+    // Copy with explicit private ACL — should override
+    client
+        .put(format!("{}/acl-copy/dst2.txt", server.base_url))
+        .header("x-amz-copy-source", "/acl-copy/src.txt")
+        .header("x-amz-acl", "private")
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .get(format!("{}/acl-copy/dst2.txt?acl", server.base_url))
+        .send()
+        .await
+        .unwrap();
+    let body = resp.text().await.unwrap();
+    assert!(!body.contains("AllUsers"));
+}

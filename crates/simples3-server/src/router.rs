@@ -53,7 +53,11 @@ async fn s3_dispatcher(
             handlers::bucket::head_bucket(state, &bucket).await
         }
         S3Operation::ListObjectsV2 { bucket } => {
-            handlers::object::list_objects_v2(state, &bucket, &query).await
+            let public_only = request
+                .extensions()
+                .get::<crate::middleware::auth::AnonymousPublicListOnly>()
+                .is_some();
+            handlers::object::list_objects_v2(state, &bucket, &query, public_only).await
         }
         S3Operation::PutObject { bucket, key } => {
             if request.headers().contains_key("x-amz-copy-source") {
@@ -113,6 +117,12 @@ async fn s3_dispatcher(
         S3Operation::DeleteObjects { bucket } => {
             handlers::object::delete_objects(state, &bucket, request).await
         }
+        S3Operation::PutObjectAcl { bucket, key } => {
+            handlers::object::put_object_acl(state, &bucket, &key, request).await
+        }
+        S3Operation::GetObjectAcl { bucket, key } => {
+            handlers::object::get_object_acl(state, &bucket, &key).await
+        }
     }
 }
 
@@ -168,6 +178,10 @@ pub fn build_admin_router(state: Arc<AppState>) -> Router {
         .route(
             "/buckets/{name}/anonymous",
             put(handlers::admin::admin_set_anonymous),
+        )
+        .route(
+            "/buckets/{name}/anonymous-list-public",
+            put(handlers::admin::admin_set_anonymous_list_public),
         )
         .route(
             "/credentials",

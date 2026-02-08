@@ -19,8 +19,9 @@ A minimal, self-hostable S3-compatible object storage server written in Rust. De
 - **CopyObject** -- server-side copy without re-uploading data
 - **DeleteObjects** -- batch delete multiple objects in a single request
 - **Object tagging** -- key-value metadata tags on objects
+- **Per-object ACL** -- `x-amz-acl` header support (`public-read` / `private`), `PutObjectAcl` / `GetObjectAcl` operations, anonymous access to public objects on private buckets
 - **Streaming I/O** -- no full-object buffering in memory
-- **Anonymous access** -- configurable globally or per-bucket
+- **Anonymous access** -- configurable globally, per-bucket, or per-object
 - **Admin CLI** -- manage buckets and credentials via HTTP or offline (direct sled access)
 - **Admin HTTP API** -- JSON-based `/_admin/` endpoints for bucket and credential management
 - **Health checks & Prometheus metrics** -- `/health`, `/ready`, `/metrics` endpoints for Kubernetes probes and observability
@@ -42,6 +43,7 @@ A minimal, self-hostable S3-compatible object storage server written in Rust. De
 |----------|-----------|
 | Buckets | `CreateBucket`, `ListBuckets`, `DeleteBucket`, `HeadBucket` |
 | Objects | `PutObject`, `GetObject`, `HeadObject`, `DeleteObject`, `ListObjectsV2`, `CopyObject`, `DeleteObjects` |
+| ACL | `PutObjectAcl`, `GetObjectAcl` |
 | Tagging | `PutObjectTagging`, `GetObjectTagging`, `DeleteObjectTagging` |
 | Multipart | `CreateMultipartUpload`, `UploadPart`, `CompleteMultipartUpload`, `AbortMultipartUpload`, `ListParts` |
 | Auth | AWS Signature V4 (header and presigned URL query-string authentication) |
@@ -156,6 +158,10 @@ name = "my-bucket"
 name = "public-assets"
 anonymous_read = true
 
+[[buckets]]
+name = "mixed-access"
+anonymous_list_public = true
+
 [[credentials]]
 access_key_id = "AKID_CI_PIPELINE"
 secret_access_key = "supersecretkey123"
@@ -166,6 +172,7 @@ description = "CI pipeline"
 |-------|----------|---------|-------------|
 | `buckets[].name` | yes | | Bucket name |
 | `buckets[].anonymous_read` | no | `false` | Enable anonymous read access |
+| `buckets[].anonymous_list_public` | no | `false` | Allow anonymous users to list public objects only |
 | `credentials[].access_key_id` | yes | | Access key ID |
 | `credentials[].secret_access_key` | yes | | Secret access key |
 | `credentials[].description` | no | `""` | Human-readable description |
@@ -178,11 +185,13 @@ See **[ADMIN.md](ADMIN.md)** for full documentation: endpoints, CLI reference, c
 
 ## Anonymous Access
 
-There are two levels of anonymous access:
+There are three levels of anonymous access:
 
 1. **Global** (`SIMPLES3_ANONYMOUS_GLOBAL=true`): bypasses authentication for all operations. Useful for development and testing.
 
 2. **Per-bucket** (`simples3-cli bucket config <name> anonymous true`): allows unauthenticated `GET`, `HEAD`, and `LIST` requests on a specific bucket. Write operations still require authentication.
+
+3. **Per-object**: set `x-amz-acl: public-read` on `PutObject` or use `PutObjectAcl` to make individual objects publicly readable on an otherwise private bucket. Anonymous users can `GET`/`HEAD` public objects without authentication. Enable `anonymous_list_public` on the bucket to also allow anonymous `ListObjectsV2` (filtered to public objects only).
 
 ## Virtual-Host Style
 
@@ -254,7 +263,7 @@ simples3/
 ## Testing
 
 ```bash
-# Run all tests (49 unit + 46 integration)
+# Run all tests (53 unit + 50 integration)
 cargo test --workspace
 
 # Run only core library unit tests
@@ -270,8 +279,8 @@ cargo test -p simples3-server
 - Metadata store: bucket CRUD, object metadata, listing with prefix/delimiter/pagination, credentials, multipart lifecycle, object tagging CRUD, tag cleanup on delete
 - Filesystem: read/write, atomic writes, nested key paths, bucket directories, multipart assembly, copy object (same-bucket and cross-bucket)
 - SigV4: signature verification, header parsing, presigned signature verification, error cases
-- XML: all response formats (list buckets, list objects, error, multipart, tagging, copy result, delete objects result)
-- Request parsing: all S3 operations from method/path/query (including tagging and batch delete)
+- XML: all response formats (list buckets, list objects, error, multipart, tagging, copy result, delete objects result, ACL)
+- Request parsing: all S3 operations from method/path/query (including tagging, batch delete, and ACL)
 
 **Integration tests** (simples3-server):
 - Bucket operations: create, list, delete, head, delete non-empty (409)
@@ -279,8 +288,9 @@ cargo test -p simples3-server
 - Object tagging: full lifecycle (put/get/delete tags), tagging count header on GET/HEAD
 - CopyObject: same-bucket copy, cross-bucket copy, nonexistent source (404)
 - DeleteObjects: batch delete, nonexistent keys treated as success
+- ACL: put with public-read, get ACL private/public, toggle ACL, invalid ACL rejected, copy inherits/overrides ACL
 - Presigned URLs: presigned GET, presigned PUT, expired URL (403)
-- Authentication: unauthenticated denied, anonymous read on enabled bucket, anonymous write denied
+- Authentication: unauthenticated denied, anonymous read on enabled bucket, anonymous write denied, anonymous access to public objects on private buckets, anonymous list filtered to public objects only
 - Virtual-host: head bucket, put via virtual-host + get via path-style
 - Multipart: full lifecycle via metadata store
 - Admin API: bucket CRUD, set-anonymous, credential CRUD, port isolation, bearer token auth

@@ -20,6 +20,8 @@ pub enum S3Operation {
     GetObjectTagging { bucket: String, key: String },
     DeleteObjectTagging { bucket: String, key: String },
     DeleteObjects { bucket: String },
+    PutObjectAcl { bucket: String, key: String },
+    GetObjectAcl { bucket: String, key: String },
 }
 
 impl S3Operation {
@@ -41,7 +43,9 @@ impl S3Operation {
             | S3Operation::ListParts { bucket, .. }
             | S3Operation::PutObjectTagging { bucket, .. }
             | S3Operation::GetObjectTagging { bucket, .. }
-            | S3Operation::DeleteObjectTagging { bucket, .. } => Some(bucket),
+            | S3Operation::DeleteObjectTagging { bucket, .. }
+            | S3Operation::PutObjectAcl { bucket, .. }
+            | S3Operation::GetObjectAcl { bucket, .. } => Some(bucket),
             S3Operation::DeleteObjects { bucket } => Some(bucket),
         }
     }
@@ -66,6 +70,8 @@ impl S3Operation {
             S3Operation::GetObjectTagging { .. } => "GetObjectTagging",
             S3Operation::DeleteObjectTagging { .. } => "DeleteObjectTagging",
             S3Operation::DeleteObjects { .. } => "DeleteObjects",
+            S3Operation::PutObjectAcl { .. } => "PutObjectAcl",
+            S3Operation::GetObjectAcl { .. } => "GetObjectAcl",
         }
     }
 
@@ -79,6 +85,7 @@ impl S3Operation {
                 | S3Operation::HeadObject { .. }
                 | S3Operation::ListParts { .. }
                 | S3Operation::GetObjectTagging { .. }
+                | S3Operation::GetObjectAcl { .. }
         )
     }
 }
@@ -163,6 +170,15 @@ pub fn parse_s3_operation(
                 key,
                 upload_id,
             }),
+            _ => None,
+        };
+    }
+
+    // ACL operations
+    if query.contains_key("acl") {
+        return match *method {
+            http::Method::PUT => Some(S3Operation::PutObjectAcl { bucket, key }),
+            http::Method::GET => Some(S3Operation::GetObjectAcl { bucket, key }),
             _ => None,
         };
     }
@@ -328,6 +344,38 @@ mod tests {
             Some(S3Operation::GetObject {
                 bucket: "mybucket".into(),
                 key: "a/b/c.txt".into()
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_put_object_acl() {
+        let op = parse_s3_operation(
+            &http::Method::PUT,
+            "/mybucket/mykey",
+            &query(&[("acl", "")]),
+        );
+        assert_eq!(
+            op,
+            Some(S3Operation::PutObjectAcl {
+                bucket: "mybucket".into(),
+                key: "mykey".into()
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_get_object_acl() {
+        let op = parse_s3_operation(
+            &http::Method::GET,
+            "/mybucket/mykey",
+            &query(&[("acl", "")]),
+        );
+        assert_eq!(
+            op,
+            Some(S3Operation::GetObjectAcl {
+                bucket: "mybucket".into(),
+                key: "mykey".into()
             })
         );
     }

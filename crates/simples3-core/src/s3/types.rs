@@ -6,6 +6,8 @@ pub struct BucketMeta {
     pub name: String,
     pub creation_date: DateTime<Utc>,
     pub anonymous_read: bool,
+    #[serde(default)]
+    pub anonymous_list_public: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -16,6 +18,8 @@ pub struct ObjectMeta {
     pub etag: String,
     pub content_type: String,
     pub last_modified: DateTime<Utc>,
+    #[serde(default)]
+    pub public: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

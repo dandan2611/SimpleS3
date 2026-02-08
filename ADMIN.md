@@ -24,6 +24,7 @@ The server binary also accepts `--admin-bind` to override `SIMPLES3_ADMIN_BIND`.
 | `PUT` | `/_admin/buckets/{name}` | Create a bucket |
 | `DELETE` | `/_admin/buckets/{name}` | Delete a bucket |
 | `PUT` | `/_admin/buckets/{name}/anonymous` | Set anonymous read |
+| `PUT` | `/_admin/buckets/{name}/anonymous-list-public` | Set anonymous list public |
 | `GET` | `/_admin/credentials` | List all credentials (secrets masked) |
 | `POST` | `/_admin/credentials` | Create a credential |
 | `DELETE` | `/_admin/credentials/{access_key_id}` | Revoke a credential |
@@ -51,7 +52,8 @@ curl http://localhost:9001/_admin/buckets
   {
     "name": "my-bucket",
     "creation_date": "2026-02-08T12:00:00Z",
-    "anonymous_read": false
+    "anonymous_read": false,
+    "anonymous_list_public": false
   }
 ]
 ```
@@ -84,6 +86,22 @@ curl -X PUT http://localhost:9001/_admin/buckets/my-bucket/anonymous \
 
 # Disable anonymous read
 curl -X PUT http://localhost:9001/_admin/buckets/my-bucket/anonymous \
+  -H "Content-Type: application/json" \
+  -d '{"enabled": false}'
+```
+
+### `PUT /_admin/buckets/{name}/anonymous-list-public`
+
+Enables or disables anonymous listing of public objects on a bucket. When enabled, unauthenticated `ListObjectsV2` requests are allowed but results are filtered to only include objects with `public: true`. Accepts a JSON body with an `enabled` boolean field.
+
+```bash
+# Enable anonymous list of public objects
+curl -X PUT http://localhost:9001/_admin/buckets/my-bucket/anonymous-list-public \
+  -H "Content-Type: application/json" \
+  -d '{"enabled": true}'
+
+# Disable anonymous list of public objects
+curl -X PUT http://localhost:9001/_admin/buckets/my-bucket/anonymous-list-public \
   -H "Content-Type: application/json" \
   -d '{"enabled": false}'
 ```
@@ -203,6 +221,10 @@ name = "my-bucket"
 name = "public-assets"
 anonymous_read = true
 
+[[buckets]]
+name = "mixed-access"
+anonymous_list_public = true
+
 [[credentials]]
 access_key_id = "AKID_CI_PIPELINE"
 secret_access_key = "supersecretkey123"
@@ -222,6 +244,7 @@ description = "Development"
 |-------|----------|---------|-------------|
 | `name` | yes | | Bucket name |
 | `anonymous_read` | no | `false` | Enable anonymous read access on this bucket |
+| `anonymous_list_public` | no | `false` | Allow anonymous users to list public objects only |
 
 **`[[credentials]]`**
 

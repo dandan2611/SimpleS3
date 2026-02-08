@@ -136,6 +136,7 @@ pub async fn complete_multipart_upload(
         etag: etag.clone(),
         content_type,
         last_modified: Utc::now(),
+        public: false,
     };
 
     if let Err(e) = state.metadata.put_object_meta(&meta) {

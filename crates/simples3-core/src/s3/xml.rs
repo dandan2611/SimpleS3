@@ -282,6 +282,87 @@ pub fn delete_objects_result_xml(
     format!("{}{}", xml_header(), String::from_utf8(bytes).unwrap())
 }
 
+pub fn get_object_acl_xml(public: bool) -> String {
+    let mut writer = Writer::new(Cursor::new(Vec::new()));
+    writer
+        .create_element("AccessControlPolicy")
+        .with_attribute(("xmlns", S3_XMLNS))
+        .write_inner_content(|w| {
+            w.create_element("Owner")
+                .write_inner_content(|w| {
+                    w.create_element("ID")
+                        .write_text_content(BytesText::new("simples3"))?;
+                    w.create_element("DisplayName")
+                        .write_text_content(BytesText::new("simples3"))?;
+                    Ok(())
+                })?;
+            w.create_element("AccessControlList")
+                .write_inner_content(|w| {
+                    // Owner always has FULL_CONTROL
+                    write_acl_grant_canonical(w, "simples3", "simples3", "FULL_CONTROL")?;
+                    if public {
+                        write_acl_grant_group(
+                            w,
+                            "http://acs.amazonaws.com/groups/global/AllUsers",
+                            "READ",
+                        )?;
+                    }
+                    Ok(())
+                })?;
+            Ok(())
+        })
+        .unwrap();
+    let bytes = writer.into_inner().into_inner();
+    format!("{}{}", xml_header(), String::from_utf8(bytes).unwrap())
+}
+
+fn write_acl_grant_canonical(
+    w: &mut Writer<Cursor<Vec<u8>>>,
+    id: &str,
+    display_name: &str,
+    permission: &str,
+) -> std::io::Result<()> {
+    w.create_element("Grant")
+        .write_inner_content(|w| {
+            w.create_element("Grantee")
+                .with_attribute(("xmlns:xsi", "http://www.w3.org/2001/XMLSchema-instance"))
+                .with_attribute(("xsi:type", "CanonicalUser"))
+                .write_inner_content(|w| {
+                    w.create_element("ID")
+                        .write_text_content(BytesText::new(id))?;
+                    w.create_element("DisplayName")
+                        .write_text_content(BytesText::new(display_name))?;
+                    Ok(())
+                })?;
+            w.create_element("Permission")
+                .write_text_content(BytesText::new(permission))?;
+            Ok(())
+        })?;
+    Ok(())
+}
+
+fn write_acl_grant_group(
+    w: &mut Writer<Cursor<Vec<u8>>>,
+    uri: &str,
+    permission: &str,
+) -> std::io::Result<()> {
+    w.create_element("Grant")
+        .write_inner_content(|w| {
+            w.create_element("Grantee")
+                .with_attribute(("xmlns:xsi", "http://www.w3.org/2001/XMLSchema-instance"))
+                .with_attribute(("xsi:type", "Group"))
+                .write_inner_content(|w| {
+                    w.create_element("URI")
+                        .write_text_content(BytesText::new(uri))?;
+                    Ok(())
+                })?;
+            w.create_element("Permission")
+                .write_text_content(BytesText::new(permission))?;
+            Ok(())
+        })?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,6 +374,7 @@ mod tests {
             name: "test-bucket".into(),
             creation_date: Utc::now(),
             anonymous_read: false,
+            anonymous_list_public: false,
         }];
         let xml = list_buckets_xml("owner", &buckets);
         assert!(xml.contains("xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\""));
@@ -315,6 +397,7 @@ mod tests {
                 etag: "abc123".into(),
                 content_type: "text/plain".into(),
                 last_modified: Utc::now(),
+                public: false,
             }],
             common_prefixes: vec!["photos/".into()],
             next_continuation_token: None,
@@ -383,5 +466,22 @@ mod tests {
 
         let xml = complete_multipart_upload_xml("mybucket", "mykey", "etag123", "http://localhost/mybucket/mykey");
         assert!(xml.contains("etag123"));
+    }
+
+    #[test]
+    fn test_get_object_acl_xml_private() {
+        let xml = get_object_acl_xml(false);
+        assert!(xml.contains("<AccessControlPolicy"));
+        assert!(xml.contains("<Permission>FULL_CONTROL</Permission>"));
+        assert!(!xml.contains("AllUsers"));
+    }
+
+    #[test]
+    fn test_get_object_acl_xml_public() {
+        let xml = get_object_acl_xml(true);
+        assert!(xml.contains("<AccessControlPolicy"));
+        assert!(xml.contains("<Permission>FULL_CONTROL</Permission>"));
+        assert!(xml.contains("AllUsers"));
+        assert!(xml.contains("<Permission>READ</Permission>"));
     }
 }

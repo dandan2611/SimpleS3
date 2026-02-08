@@ -16,6 +16,8 @@ pub struct InitBucket {
     pub name: String,
     #[serde(default)]
     pub anonymous_read: bool,
+    #[serde(default)]
+    pub anonymous_list_public: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -56,6 +58,17 @@ pub fn apply(config: &InitConfig, metadata: &MetadataStore) -> Result<(), String
                     )
                 })?;
             tracing::info!(bucket = %bucket.name, "Init: enabled anonymous read");
+        }
+        if bucket.anonymous_list_public {
+            metadata
+                .set_bucket_anonymous_list_public(&bucket.name, true)
+                .map_err(|e| {
+                    format!(
+                        "Failed to set anonymous list public on bucket '{}': {}",
+                        bucket.name, e
+                    )
+                })?;
+            tracing::info!(bucket = %bucket.name, "Init: enabled anonymous list public");
         }
     }
 
@@ -141,10 +154,12 @@ description = "Development"
                 InitBucket {
                     name: "bucket-a".into(),
                     anonymous_read: false,
+                    anonymous_list_public: false,
                 },
                 InitBucket {
                     name: "bucket-b".into(),
                     anonymous_read: false,
+                    anonymous_list_public: false,
                 },
             ],
             credentials: vec![InitCredential {
@@ -169,6 +184,7 @@ description = "Development"
             buckets: vec![InitBucket {
                 name: "idem-bucket".into(),
                 anonymous_read: false,
+                anonymous_list_public: false,
             }],
             credentials: vec![InitCredential {
                 access_key_id: "AKID_IDEM".into(),
@@ -193,6 +209,7 @@ description = "Development"
             buckets: vec![InitBucket {
                 name: "public".into(),
                 anonymous_read: true,
+                anonymous_list_public: false,
             }],
             credentials: vec![],
         };

@@ -39,6 +39,7 @@ impl MetadataStore {
             name: name.to_string(),
             creation_date: Utc::now(),
             anonymous_read: false,
+            anonymous_list_public: false,
         };
         let json = serde_json::to_vec(&meta).map_err(|e| S3Error::InternalError(e.to_string()))?;
         tree.insert(name, json).map_err(|e| S3Error::InternalError(e.to_string()))?;
@@ -88,6 +89,15 @@ impl MetadataStore {
     pub fn set_bucket_anonymous_read(&self, name: &str, anonymous: bool) -> Result<(), S3Error> {
         let mut meta = self.get_bucket(name)?;
         meta.anonymous_read = anonymous;
+        let tree = self.db.open_tree(BUCKETS_TREE).map_err(|e| S3Error::InternalError(e.to_string()))?;
+        let json = serde_json::to_vec(&meta).map_err(|e| S3Error::InternalError(e.to_string()))?;
+        tree.insert(name, json).map_err(|e| S3Error::InternalError(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn set_bucket_anonymous_list_public(&self, name: &str, enabled: bool) -> Result<(), S3Error> {
+        let mut meta = self.get_bucket(name)?;
+        meta.anonymous_list_public = enabled;
         let tree = self.db.open_tree(BUCKETS_TREE).map_err(|e| S3Error::InternalError(e.to_string()))?;
         let json = serde_json::to_vec(&meta).map_err(|e| S3Error::InternalError(e.to_string()))?;
         tree.insert(name, json).map_err(|e| S3Error::InternalError(e.to_string()))?;
@@ -384,6 +394,7 @@ mod tests {
             etag: "abc".into(),
             content_type: "text/plain".into(),
             last_modified: Utc::now(),
+            public: false,
         }).unwrap();
         assert!(matches!(store.delete_bucket("bucket1"), Err(S3Error::BucketNotEmpty)));
     }
@@ -399,6 +410,7 @@ mod tests {
             etag: "etag".into(),
             content_type: "application/octet-stream".into(),
             last_modified: Utc::now(),
+            public: false,
         };
         store.put_object_meta(&meta).unwrap();
         let fetched = store.get_object_meta("b", "k").unwrap();
@@ -419,6 +431,7 @@ mod tests {
                 etag: "e".into(),
                 content_type: "".into(),
                 last_modified: Utc::now(),
+                public: false,
             }).unwrap();
         }
         let resp = store.list_objects_v2(&ListObjectsV2Request {
@@ -444,6 +457,7 @@ mod tests {
                 etag: "e".into(),
                 content_type: "".into(),
                 last_modified: Utc::now(),
+                public: false,
             }).unwrap();
         }
         let resp = store.list_objects_v2(&ListObjectsV2Request {
@@ -470,6 +484,7 @@ mod tests {
                 etag: "e".into(),
                 content_type: "".into(),
                 last_modified: Utc::now(),
+                public: false,
             }).unwrap();
         }
         let resp = store.list_objects_v2(&ListObjectsV2Request {
@@ -506,6 +521,7 @@ mod tests {
             etag: "e".into(),
             content_type: "".into(),
             last_modified: Utc::now(),
+            public: false,
         }).unwrap();
 
         // No tags initially
@@ -540,6 +556,7 @@ mod tests {
             etag: "e".into(),
             content_type: "".into(),
             last_modified: Utc::now(),
+            public: false,
         }).unwrap();
 
         let mut tags = HashMap::new();
@@ -557,6 +574,7 @@ mod tests {
             etag: "e".into(),
             content_type: "".into(),
             last_modified: Utc::now(),
+            public: false,
         }).unwrap();
         let fetched = store.get_object_tagging("b", "k").unwrap();
         assert!(fetched.is_empty());

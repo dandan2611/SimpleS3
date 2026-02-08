@@ -8,9 +8,12 @@ use axum::{
 use axum::response::IntoResponse;
 use chrono::{NaiveDateTime, Utc};
 use simples3_core::auth::sigv4;
-use simples3_core::s3::request::parse_s3_operation;
+use simples3_core::s3::request::{parse_s3_operation, S3Operation};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
+
+#[derive(Clone)]
+pub struct AnonymousPublicListOnly;
 
 pub async fn auth_middleware(
     State(state): State<Arc<AppState>>,
@@ -72,6 +75,32 @@ pub async fn auth_middleware(
                         }
                     }
                 }
+            }
+        }
+
+        // Per-object public access on private buckets
+        if let Some(ref op) = operation {
+            match op {
+                S3Operation::GetObject { bucket, key }
+                | S3Operation::HeadObject { bucket, key }
+                | S3Operation::GetObjectTagging { bucket, key }
+                | S3Operation::GetObjectAcl { bucket, key } => {
+                    if let Ok(meta) = state.metadata.get_object_meta(bucket, key) {
+                        if meta.public {
+                            return next.run(request).await;
+                        }
+                    }
+                }
+                S3Operation::ListObjectsV2 { bucket } => {
+                    if let Ok(bucket_meta) = state.metadata.get_bucket(bucket) {
+                        if bucket_meta.anonymous_list_public {
+                            let mut request = request;
+                            request.extensions_mut().insert(AnonymousPublicListOnly);
+                            return next.run(request).await;
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     }
