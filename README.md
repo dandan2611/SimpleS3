@@ -303,4 +303,4 @@ cargo test -p simples3-server
 
 ## License
 
-MIT
+Apache-2.0
