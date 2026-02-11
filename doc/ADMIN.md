@@ -10,7 +10,7 @@ The server exposes a JSON-based admin API under `/_admin/` on a separate port (d
 |----------|---------|-------------|
 | `SIMPLES3_ADMIN_ENABLED` | `true` | Enable the admin API server (`false` or `0` to disable) |
 | `SIMPLES3_ADMIN_BIND` | `127.0.0.1:9001` | Address and port for the admin API |
-| `SIMPLES3_ADMIN_TOKEN` | *(none)* | Bearer token required for admin API access (no auth if unset) |
+| `SIMPLES3_ADMIN_TOKEN` | *(none)* | Bearer token required for admin API access. **Admin API is denied (401) when no token is configured.** |
 
 The server binary also accepts `--admin-bind` to override `SIMPLES3_ADMIN_BIND`.
 
@@ -203,7 +203,15 @@ curl http://localhost:9001/metrics
 | `simples3_total_storage_bytes` | Gauge | Total storage bytes across all buckets |
 | `simples3_credential_count` | Gauge | Number of credentials |
 | `simples3_active_multipart_uploads` | Gauge | Active multipart uploads |
+| `simples3_lifecycle_rules_total` | Gauge | Total lifecycle rules across all buckets |
 | `simples3_uptime_seconds` | Gauge | Server uptime in seconds |
+
+**Background task metrics** (recorded by background workers):
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `simples3_multipart_expired_total` | Counter | Multipart uploads cleaned up by the background task |
+| `simples3_lifecycle_expired_total` | Counter | Objects deleted by the lifecycle expiration scanner |
 
 ## Bootstrap / Init Config
 
@@ -225,6 +233,10 @@ anonymous_read = true
 name = "mixed-access"
 anonymous_list_public = true
 
+[[buckets]]
+name = "web-app"
+cors_origins = ["https://example.com", "https://app.example.com"]
+
 [[credentials]]
 access_key_id = "AKID_CI_PIPELINE"
 secret_access_key = "supersecretkey123"
@@ -245,6 +257,7 @@ description = "Development"
 | `name` | yes | | Bucket name |
 | `anonymous_read` | no | `false` | Enable anonymous read access on this bucket |
 | `anonymous_list_public` | no | `false` | Allow anonymous users to list public objects only |
+| `cors_origins` | no | *(none)* | List of allowed CORS origins (creates a CORS config with all methods/headers) |
 
 **`[[credentials]]`**
 

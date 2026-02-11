@@ -9,6 +9,13 @@
 
 A minimal, self-hostable S3-compatible object storage server written in Rust. Designed for development, testing, and lightweight self-hosted deployments where you need standard S3 client compatibility without the operational complexity of full-featured alternatives.
 
+> **Documentation:**
+> [Admin API & CLI](doc/ADMIN.md) |
+> [Lifecycle Policies](doc/LIFECYCLE.md) |
+> [Bucket Policies](doc/POLICIES.md) |
+> [CORS](doc/CORS.md) |
+> [Security](doc/SECURITY.md)
+
 ## Features
 
 - **S3-compatible API** -- works with the AWS CLI, SDKs, and any S3 client
@@ -26,14 +33,14 @@ A minimal, self-hostable S3-compatible object storage server written in Rust. De
 - **Admin HTTP API** -- JSON-based `/_admin/` endpoints for bucket and credential management
 - **Health checks & Prometheus metrics** -- `/health`, `/ready`, `/metrics` endpoints for Kubernetes probes and observability
 - **Docker-ready** -- multi-stage Dockerfile and Compose file included, with built-in healthcheck
+- **Lifecycle policies** -- automatic expiration of objects based on age and prefix rules via S3-compatible XML API (see **[LIFECYCLE.md](doc/LIFECYCLE.md)**)
+- **Bucket policies** -- JSON-based IAM-style access control policies (Allow/Deny, per-principal, per-action, per-resource) (see **[POLICIES.md](doc/POLICIES.md)**)
+- **Per-bucket CORS** -- S3-compatible XML API for CORS configuration with dynamic middleware (see **[CORS.md](doc/CORS.md)**)
 - **Zero external services** -- sled embedded database for metadata, filesystem for object data
 
 ## Planned Features
 
 - **Object versioning** -- keep previous versions of objects, with list/restore/delete support
-- **Lifecycle policies** -- automatic expiration and cleanup of objects based on age or prefix rules
-- **Bucket policies** -- JSON-based access control policies (a subset of AWS IAM policy language)
-- **CORS configuration** -- per-bucket CORS rules for browser-based access
 - **TLS termination** -- built-in HTTPS support without a reverse proxy
 - **Web UI** -- lightweight admin dashboard for browsing buckets and objects
 
@@ -46,6 +53,9 @@ A minimal, self-hostable S3-compatible object storage server written in Rust. De
 | ACL | `PutObjectAcl`, `GetObjectAcl` |
 | Tagging | `PutObjectTagging`, `GetObjectTagging`, `DeleteObjectTagging` |
 | Multipart | `CreateMultipartUpload`, `UploadPart`, `CompleteMultipartUpload`, `AbortMultipartUpload`, `ListParts` |
+| Lifecycle | `PutBucketLifecycleConfiguration`, `GetBucketLifecycleConfiguration`, `DeleteBucketLifecycleConfiguration` |
+| Policy | `PutBucketPolicy`, `GetBucketPolicy`, `DeleteBucketPolicy` |
+| CORS | `PutBucketCors`, `GetBucketCors`, `DeleteBucketCors` |
 | Auth | AWS Signature V4 (header and presigned URL query-string authentication) |
 
 ## Quick Start
@@ -139,10 +149,15 @@ All configuration is via environment variables. CLI flags (where available) take
 | `SIMPLES3_ANONYMOUS_GLOBAL` | `false` | Allow anonymous access to all operations without authentication |
 | `SIMPLES3_ADMIN_ENABLED` | `true` | Enable the admin API server (`false` or `0` to disable) |
 | `SIMPLES3_ADMIN_BIND` | `127.0.0.1:9001` | Address and port for the admin API |
-| `SIMPLES3_ADMIN_TOKEN` | *(none)* | Bearer token required for admin API access (no auth if unset) |
+| `SIMPLES3_ADMIN_TOKEN` | *(none)* | Bearer token required for admin API access. **Admin API is denied when no token is configured.** |
 | `SIMPLES3_INIT_CONFIG` | *(none)* | Path to a TOML init config file for declarative bootstrap (see below) |
 | `SIMPLES3_MULTIPART_TTL` | `86400` | Max age in seconds for incomplete multipart uploads before cleanup (`0` = disabled) |
 | `SIMPLES3_MULTIPART_CLEANUP_INTERVAL` | `3600` | Interval in seconds between multipart cleanup scans |
+| `SIMPLES3_LIFECYCLE_SCAN_INTERVAL` | `3600` | Interval in seconds between lifecycle expiration scans (`0` = disabled) |
+| `SIMPLES3_CORS_ORIGINS` | *(none)* | Comma-separated list of allowed CORS origins for the global fallback (all origins allowed if unset) |
+| `SIMPLES3_MAX_OBJECT_SIZE` | `5368709120` | Maximum object/part upload body size in bytes (default: 5 GiB) |
+| `SIMPLES3_MAX_XML_BODY_SIZE` | `262144` | Maximum XML request body size in bytes (default: 256 KiB) |
+| `SIMPLES3_MAX_POLICY_BODY_SIZE` | `20480` | Maximum bucket policy JSON body size in bytes (default: 20 KiB) |
 
 The server binary also accepts `--bind`, `--data-dir`, `--metadata-dir`, `--hostname`, `--region`, `--admin-bind`, and `--init-config` flags.
 
@@ -164,6 +179,10 @@ anonymous_read = true
 name = "mixed-access"
 anonymous_list_public = true
 
+[[buckets]]
+name = "web-app"
+cors_origins = ["https://example.com", "https://app.example.com"]
+
 [[credentials]]
 access_key_id = "AKID_CI_PIPELINE"
 secret_access_key = "supersecretkey123"
@@ -175,6 +194,7 @@ description = "CI pipeline"
 | `buckets[].name` | yes | | Bucket name |
 | `buckets[].anonymous_read` | no | `false` | Enable anonymous read access |
 | `buckets[].anonymous_list_public` | no | `false` | Allow anonymous users to list public objects only |
+| `buckets[].cors_origins` | no | *(none)* | List of allowed CORS origins (creates a CORS config with all methods and headers) |
 | `credentials[].access_key_id` | yes | | Access key ID |
 | `credentials[].secret_access_key` | yes | | Secret access key |
 | `credentials[].description` | no | `""` | Human-readable description |
@@ -183,7 +203,7 @@ description = "CI pipeline"
 
 The server exposes a JSON-based admin API under `/_admin/` on a separate port (default `127.0.0.1:9001`), with optional bearer token authentication. The `simples3-cli` tool communicates with this API.
 
-See **[ADMIN.md](ADMIN.md)** for full documentation: endpoints, CLI reference, configuration, and examples.
+See **[ADMIN.md](doc/ADMIN.md)** for full documentation: endpoints, CLI reference, configuration, and examples.
 
 ## Anonymous Access
 
@@ -226,9 +246,10 @@ simples3/
     │       │   ├── metadata.rs # sled-backed metadata store
     │       │   └── filesystem.rs   # Object file I/O with atomic writes
     │       └── s3/
-    │           ├── types.rs    # BucketMeta, ObjectMeta, etc.
-    │           ├── xml.rs      # S3 XML response builders
-    │           └── request.rs  # S3Operation enum and request parsing
+    │           ├── types.rs    # BucketMeta, ObjectMeta, lifecycle/policy types
+    │           ├── xml.rs      # S3 XML response builders and parsers
+    │           ├── request.rs  # S3Operation enum and request parsing
+    │           └── policy.rs   # Bucket policy evaluator
     ├── simples3-server/        # HTTP server binary
     │   └── src/
     │       ├── main.rs         # Entry point with CLI flag parsing
@@ -237,14 +258,18 @@ simples3/
     │       ├── metrics.rs      # Prometheus recorder init
     │       ├── middleware/
     │       │   ├── auth.rs     # SigV4 verification middleware
+    │       │   ├── cors.rs     # Dynamic per-bucket CORS middleware
     │       │   ├── host_rewrite.rs  # Virtual-host normalization
     │       │   └── metrics.rs  # Request counter/histogram middleware
     │       └── handlers/
     │           ├── admin.rs    # /_admin/ JSON API
     │           ├── health.rs   # /health, /ready, /metrics handlers
     │           ├── bucket.rs   # S3 bucket operations
+    │           ├── cors.rs     # CORS configuration handlers
     │           ├── object.rs   # S3 object operations with streaming
-    │           └── multipart.rs    # Multipart upload operations
+    │           ├── multipart.rs    # Multipart upload operations
+    │           ├── lifecycle.rs    # Lifecycle configuration handlers
+    │           └── policy.rs      # Bucket policy handlers
     └── simples3-cli/           # Admin CLI binary
         └── src/
             ├── main.rs         # clap-derived CLI
@@ -265,7 +290,7 @@ simples3/
 ## Testing
 
 ```bash
-# Run all tests (53 unit + 50 integration)
+# Run all tests (89 unit + 55 integration)
 cargo test --workspace
 
 # Run only core library unit tests
@@ -278,11 +303,15 @@ cargo test -p simples3-server
 ### Test Coverage
 
 **Unit tests** (simples3-core):
-- Metadata store: bucket CRUD, object metadata, listing with prefix/delimiter/pagination, credentials, multipart lifecycle, object tagging CRUD, tag cleanup on delete
+- Metadata store: bucket CRUD, object metadata, listing with prefix/delimiter/pagination, credentials, multipart lifecycle, object tagging CRUD, tag cleanup on delete, lifecycle configuration CRUD, bucket policy CRUD, bucket delete cleans up lifecycle and policy
 - Filesystem: read/write, atomic writes, nested key paths, bucket directories, multipart assembly, copy object (same-bucket and cross-bucket)
 - SigV4: signature verification, header parsing, presigned signature verification, error cases
-- XML: all response formats (list buckets, list objects, error, multipart, tagging, copy result, delete objects result, ACL)
-- Request parsing: all S3 operations from method/path/query (including tagging, batch delete, and ACL)
+- XML: all response formats (list buckets, list objects, error, multipart, tagging, copy result, delete objects result, ACL, lifecycle configuration roundtrip, invalid lifecycle days)
+- CORS XML: serialization and parsing roundtrip, validation (missing origin/method)
+- CORS metadata: CRUD, cleanup on bucket delete
+- Init config: CORS origins support
+- Request parsing: all S3 operations from method/path/query (including tagging, batch delete, ACL, lifecycle, policy, and CORS)
+- Policy evaluator: allow anonymous, deny trumps allow, implicit deny, action wildcard matching, principal-specific key ID matching
 
 **Integration tests** (simples3-server):
 - Bucket operations: create, list, delete, head, delete non-empty (409)
@@ -298,6 +327,8 @@ cargo test -p simples3-server
 - Admin API: bucket CRUD, set-anonymous, credential CRUD, port isolation, bearer token auth
 - Init config: bootstrap from TOML file, idempotent re-apply
 - Health & metrics: liveness, readiness, Prometheus metrics scrape, unauthenticated access, request counters
+- Lifecycle: CRUD (put/get/delete configuration), nonexistent bucket (404)
+- Bucket policy: CRUD (put/get/delete policy), anonymous access granted by policy, explicit deny overrides allow
 
 ## License
 
