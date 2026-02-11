@@ -9,6 +9,8 @@ pub const MULTIPART_EXPIRED_TOTAL: &str = "simples3_multipart_expired_total";
 pub const MULTIPART_ACTIVE_UPLOADS: &str = "simples3_active_multipart_uploads";
 pub const MULTIPART_TOTAL_PARTS: &str = "simples3_multipart_total_parts";
 pub const MULTIPART_OLDEST_AGE_SECONDS: &str = "simples3_multipart_oldest_age_seconds";
+pub const LIFECYCLE_EXPIRED_TOTAL: &str = "simples3_lifecycle_expired_total";
+pub const LIFECYCLE_RULES_TOTAL: &str = "simples3_lifecycle_rules_total";
 
 static HANDLE: OnceLock<PrometheusHandle> = OnceLock::new();
 

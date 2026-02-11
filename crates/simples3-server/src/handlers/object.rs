@@ -44,7 +44,7 @@ pub async fn put_object(
     };
 
     // Stream body to disk
-    let body_bytes = match axum::body::to_bytes(request.into_body(), usize::MAX).await {
+    let body_bytes = match axum::body::to_bytes(request.into_body(), state.config.max_object_size).await {
         Ok(b) => b,
         Err(e) => {
             return simples3_core::S3Error::InternalError(e.to_string()).into_response();
@@ -79,7 +79,10 @@ pub async fn get_object(state: Arc<AppState>, bucket: &str, key: &str) -> Respon
         Err(e) => return e.into_response(),
     };
 
-    let file_path = state.filestore.open_object_file(bucket, key);
+    let file_path = match state.filestore.open_object_file(bucket, key) {
+        Ok(p) => p,
+        Err(e) => return e.into_response(),
+    };
     let file = match tokio::fs::File::open(&file_path).await {
         Ok(f) => f,
         Err(_) => return simples3_core::S3Error::NoSuchKey.into_response(),
@@ -93,7 +96,7 @@ pub async fn get_object(state: Arc<AppState>, bucket: &str, key: &str) -> Respon
         .header("content-type", &meta.content_type)
         .header("content-length", meta.size.to_string())
         .header("etag", format!("\"{}\"", meta.etag))
-        .header("last-modified", meta.last_modified.to_rfc2822());
+        .header("last-modified", meta.last_modified.format("%a, %d %b %Y %H:%M:%S GMT").to_string());
 
     if let Ok(tags) = state.metadata.get_object_tagging(bucket, key) {
         if !tags.is_empty() {
@@ -115,7 +118,7 @@ pub async fn head_object(state: Arc<AppState>, bucket: &str, key: &str) -> Respo
         .header("content-type", &meta.content_type)
         .header("content-length", meta.size.to_string())
         .header("etag", format!("\"{}\"", meta.etag))
-        .header("last-modified", meta.last_modified.to_rfc2822());
+        .header("last-modified", meta.last_modified.format("%a, %d %b %Y %H:%M:%S GMT").to_string());
 
     if let Ok(tags) = state.metadata.get_object_tagging(bucket, key) {
         if !tags.is_empty() {
@@ -237,7 +240,7 @@ pub async fn put_object_tagging(
     key: &str,
     request: Request<Body>,
 ) -> Response<Body> {
-    let body_bytes = match axum::body::to_bytes(request.into_body(), usize::MAX).await {
+    let body_bytes = match axum::body::to_bytes(request.into_body(), state.config.max_xml_body_size).await {
         Ok(b) => b,
         Err(e) => return simples3_core::S3Error::InternalError(e.to_string()).into_response(),
     };
@@ -435,7 +438,7 @@ pub async fn delete_objects(
         return e.into_response();
     }
 
-    let body_bytes = match axum::body::to_bytes(request.into_body(), usize::MAX).await {
+    let body_bytes = match axum::body::to_bytes(request.into_body(), state.config.max_xml_body_size).await {
         Ok(b) => b,
         Err(e) => return simples3_core::S3Error::InternalError(e.to_string()).into_response(),
     };

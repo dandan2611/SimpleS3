@@ -54,7 +54,7 @@ pub async fn upload_part(
         Err(e) => return e.into_response(),
     };
 
-    let body_bytes = match axum::body::to_bytes(request.into_body(), usize::MAX).await {
+    let body_bytes = match axum::body::to_bytes(request.into_body(), state.config.max_object_size).await {
         Ok(b) => b,
         Err(e) => {
             return simples3_core::S3Error::InternalError(e.to_string()).into_response();
@@ -97,7 +97,7 @@ pub async fn complete_multipart_upload(
     };
 
     // Parse the XML body to get part list
-    let body_bytes = match axum::body::to_bytes(request.into_body(), usize::MAX).await {
+    let body_bytes = match axum::body::to_bytes(request.into_body(), state.config.max_xml_body_size).await {
         Ok(b) => b,
         Err(e) => {
             return simples3_core::S3Error::InternalError(e.to_string()).into_response();

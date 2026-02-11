@@ -1616,6 +1616,7 @@ dependencies = [
  "hex",
  "hmac",
  "http",
+ "ipnet",
  "md-5",
  "percent-encoding",
  "quick-xml",
@@ -1655,7 +1656,6 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tower",
- "tower-http",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -1984,7 +1984,6 @@ dependencies = [
  "tower",
  "tower-layer",
  "tower-service",
- "tracing",
 ]
 
 [[package]]

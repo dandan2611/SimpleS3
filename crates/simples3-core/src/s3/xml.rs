@@ -4,7 +4,9 @@ use std::collections::HashMap;
 use std::io::Cursor;
 
 use crate::s3::types::{
-    BucketMeta, ListObjectsV2Response, MultipartUpload, ObjectMeta, PartInfo,
+    BucketMeta, CorsConfiguration, CorsRule, LifecycleConfiguration, LifecycleRule,
+    LifecycleStatus, LifecycleTagFilter, ListObjectsV2Response, MultipartUpload, ObjectMeta,
+    PartInfo,
 };
 
 const S3_XMLNS: &str = "http://s3.amazonaws.com/doc/2006-03-01/";
@@ -341,6 +343,403 @@ fn write_acl_grant_canonical(
     Ok(())
 }
 
+pub fn lifecycle_configuration_xml(config: &LifecycleConfiguration) -> String {
+    let mut writer = Writer::new(Cursor::new(Vec::new()));
+    writer
+        .create_element("LifecycleConfiguration")
+        .with_attribute(("xmlns", S3_XMLNS))
+        .write_inner_content(|w| {
+            for rule in &config.rules {
+                w.create_element("Rule")
+                    .write_inner_content(|w| {
+                        w.create_element("ID")
+                            .write_text_content(BytesText::new(&rule.id))?;
+                        // Filter: use <And> wrapper when both prefix is non-empty and tags are present
+                        let has_prefix = !rule.prefix.is_empty();
+                        let has_tags = !rule.tags.is_empty();
+                        let need_and = (has_prefix && has_tags) || rule.tags.len() > 1;
+                        w.create_element("Filter")
+                            .write_inner_content(|w| {
+                                if need_and {
+                                    w.create_element("And")
+                                        .write_inner_content(|w| {
+                                            if has_prefix {
+                                                w.create_element("Prefix")
+                                                    .write_text_content(BytesText::new(&rule.prefix))?;
+                                            }
+                                            for tag in &rule.tags {
+                                                write_lifecycle_tag_xml(w, tag)?;
+                                            }
+                                            Ok(())
+                                        })?;
+                                } else if has_tags {
+                                    // Single tag, no prefix
+                                    write_lifecycle_tag_xml(w, &rule.tags[0])?;
+                                } else {
+                                    w.create_element("Prefix")
+                                        .write_text_content(BytesText::new(&rule.prefix))?;
+                                }
+                                Ok(())
+                            })?;
+                        let status_str = match rule.status {
+                            LifecycleStatus::Enabled => "Enabled",
+                            LifecycleStatus::Disabled => "Disabled",
+                        };
+                        w.create_element("Status")
+                            .write_text_content(BytesText::new(status_str))?;
+                        w.create_element("Expiration")
+                            .write_inner_content(|w| {
+                                if let Some(ref date) = rule.expiration_date {
+                                    w.create_element("Date")
+                                        .write_text_content(BytesText::new(date))?;
+                                } else {
+                                    w.create_element("Days")
+                                        .write_text_content(BytesText::new(
+                                            &rule.expiration_days.to_string(),
+                                        ))?;
+                                }
+                                Ok(())
+                            })?;
+                        Ok(())
+                    })?;
+            }
+            Ok(())
+        })
+        .unwrap();
+    let bytes = writer.into_inner().into_inner();
+    format!("{}{}", xml_header(), String::from_utf8(bytes).unwrap())
+}
+
+fn write_lifecycle_tag_xml(
+    w: &mut Writer<Cursor<Vec<u8>>>,
+    tag: &LifecycleTagFilter,
+) -> std::io::Result<()> {
+    w.create_element("Tag")
+        .write_inner_content(|w| {
+            w.create_element("Key")
+                .write_text_content(BytesText::new(&tag.key))?;
+            w.create_element("Value")
+                .write_text_content(BytesText::new(&tag.value))?;
+            Ok(())
+        })?;
+    Ok(())
+}
+
+pub fn parse_lifecycle_configuration_xml(
+    data: &[u8],
+) -> Result<LifecycleConfiguration, crate::S3Error> {
+    use quick_xml::Reader;
+    use quick_xml::events::Event;
+
+    let mut reader = Reader::from_reader(data);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    let mut rules = Vec::new();
+
+    // Per-rule state
+    let mut in_rule = false;
+    let mut in_id = false;
+    let mut in_filter = false;
+    let mut in_and = false;
+    let mut in_prefix = false;
+    let mut in_status = false;
+    let mut in_expiration = false;
+    let mut in_days = false;
+    let mut in_date = false;
+    let mut in_tag = false;
+    let mut in_tag_key = false;
+    let mut in_tag_value = false;
+
+    let mut current_id = String::new();
+    let mut current_prefix = String::new();
+    let mut current_status = String::new();
+    let mut current_days = String::new();
+    let mut current_date = String::new();
+    let mut current_tags: Vec<LifecycleTagFilter> = Vec::new();
+    let mut current_tag_key = String::new();
+    let mut current_tag_value = String::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => match e.name().as_ref() {
+                b"Rule" => {
+                    in_rule = true;
+                    current_id.clear();
+                    current_prefix.clear();
+                    current_status.clear();
+                    current_days.clear();
+                    current_date.clear();
+                    current_tags.clear();
+                }
+                b"ID" if in_rule => in_id = true,
+                b"Filter" if in_rule => in_filter = true,
+                b"And" if in_filter => in_and = true,
+                b"Prefix" if in_filter || in_and => in_prefix = true,
+                b"Tag" if in_filter || in_and => {
+                    in_tag = true;
+                    current_tag_key.clear();
+                    current_tag_value.clear();
+                }
+                b"Key" if in_tag => in_tag_key = true,
+                b"Value" if in_tag => in_tag_value = true,
+                b"Status" if in_rule => in_status = true,
+                b"Expiration" if in_rule => in_expiration = true,
+                b"Days" if in_expiration => in_days = true,
+                b"Date" if in_expiration => in_date = true,
+                _ => {}
+            },
+            Ok(Event::Text(e)) => {
+                let text = e
+                    .unescape()
+                    .map_err(|e| crate::S3Error::InvalidArgument(e.to_string()))?
+                    .into_owned();
+                if in_tag_key {
+                    current_tag_key = text;
+                } else if in_tag_value {
+                    current_tag_value = text;
+                } else if in_id {
+                    current_id = text;
+                } else if in_prefix {
+                    current_prefix = text;
+                } else if in_status {
+                    current_status = text;
+                } else if in_days {
+                    current_days = text;
+                } else if in_date {
+                    current_date = text;
+                }
+            }
+            Ok(Event::End(e)) => match e.name().as_ref() {
+                b"Rule" => {
+                    let status = match current_status.as_str() {
+                        "Enabled" => LifecycleStatus::Enabled,
+                        "Disabled" => LifecycleStatus::Disabled,
+                        other => {
+                            return Err(crate::S3Error::InvalidArgument(format!(
+                                "Invalid lifecycle status: {}",
+                                other
+                            )));
+                        }
+                    };
+                    let has_days = !current_days.is_empty();
+                    let has_date = !current_date.is_empty();
+                    if has_days && has_date {
+                        return Err(crate::S3Error::InvalidArgument(
+                            "Expiration must specify either Days or Date, not both".to_string(),
+                        ));
+                    }
+                    let (days, date) = if has_date {
+                        // Validate date parses as ISO 8601
+                        chrono::DateTime::parse_from_rfc3339(&current_date).map_err(|_| {
+                            crate::S3Error::InvalidArgument(
+                                "Invalid expiration date format (expected ISO 8601)".to_string(),
+                            )
+                        })?;
+                        (0, Some(current_date.clone()))
+                    } else {
+                        let d: u32 = current_days.parse().map_err(|_| {
+                            crate::S3Error::InvalidArgument(
+                                "Invalid expiration days".to_string(),
+                            )
+                        })?;
+                        if d == 0 {
+                            return Err(crate::S3Error::InvalidArgument(
+                                "Expiration days must be greater than 0".to_string(),
+                            ));
+                        }
+                        (d, None)
+                    };
+                    rules.push(LifecycleRule {
+                        id: current_id.clone(),
+                        prefix: current_prefix.clone(),
+                        status,
+                        expiration_days: days,
+                        expiration_date: date,
+                        tags: current_tags.clone(),
+                    });
+                    in_rule = false;
+                }
+                b"ID" => in_id = false,
+                b"Filter" => in_filter = false,
+                b"And" => in_and = false,
+                b"Prefix" if in_prefix => in_prefix = false,
+                b"Tag" if in_tag => {
+                    current_tags.push(LifecycleTagFilter {
+                        key: current_tag_key.clone(),
+                        value: current_tag_value.clone(),
+                    });
+                    in_tag = false;
+                }
+                b"Key" if in_tag => in_tag_key = false,
+                b"Value" if in_tag => in_tag_value = false,
+                b"Status" => in_status = false,
+                b"Expiration" => in_expiration = false,
+                b"Days" => in_days = false,
+                b"Date" => in_date = false,
+                _ => {}
+            },
+            Ok(Event::Eof) => break,
+            Err(e) => {
+                return Err(crate::S3Error::InvalidArgument(e.to_string()));
+            }
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    Ok(LifecycleConfiguration { rules })
+}
+
+pub fn cors_configuration_xml(config: &CorsConfiguration) -> String {
+    let mut writer = Writer::new(Cursor::new(Vec::new()));
+    writer
+        .create_element("CORSConfiguration")
+        .with_attribute(("xmlns", S3_XMLNS))
+        .write_inner_content(|w| {
+            for rule in &config.rules {
+                w.create_element("CORSRule")
+                    .write_inner_content(|w| {
+                        if let Some(ref id) = rule.id {
+                            w.create_element("ID")
+                                .write_text_content(BytesText::new(id))?;
+                        }
+                        for origin in &rule.allowed_origins {
+                            w.create_element("AllowedOrigin")
+                                .write_text_content(BytesText::new(origin))?;
+                        }
+                        for method in &rule.allowed_methods {
+                            w.create_element("AllowedMethod")
+                                .write_text_content(BytesText::new(method))?;
+                        }
+                        for header in &rule.allowed_headers {
+                            w.create_element("AllowedHeader")
+                                .write_text_content(BytesText::new(header))?;
+                        }
+                        for header in &rule.expose_headers {
+                            w.create_element("ExposeHeader")
+                                .write_text_content(BytesText::new(header))?;
+                        }
+                        if let Some(max_age) = rule.max_age_seconds {
+                            w.create_element("MaxAgeSeconds")
+                                .write_text_content(BytesText::new(&max_age.to_string()))?;
+                        }
+                        Ok(())
+                    })?;
+            }
+            Ok(())
+        })
+        .unwrap();
+    let bytes = writer.into_inner().into_inner();
+    format!("{}{}", xml_header(), String::from_utf8(bytes).unwrap())
+}
+
+pub fn parse_cors_configuration_xml(
+    data: &[u8],
+) -> Result<CorsConfiguration, crate::S3Error> {
+    use quick_xml::Reader;
+    use quick_xml::events::Event;
+
+    let mut reader = Reader::from_reader(data);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    let mut rules = Vec::new();
+
+    let mut in_rule = false;
+    let mut in_id = false;
+    let mut in_allowed_origin = false;
+    let mut in_allowed_method = false;
+    let mut in_allowed_header = false;
+    let mut in_expose_header = false;
+    let mut in_max_age = false;
+
+    let mut current_id: Option<String> = None;
+    let mut current_origins: Vec<String> = Vec::new();
+    let mut current_methods: Vec<String> = Vec::new();
+    let mut current_headers: Vec<String> = Vec::new();
+    let mut current_expose: Vec<String> = Vec::new();
+    let mut current_max_age: Option<u32> = None;
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => match e.name().as_ref() {
+                b"CORSRule" => {
+                    in_rule = true;
+                    current_id = None;
+                    current_origins.clear();
+                    current_methods.clear();
+                    current_headers.clear();
+                    current_expose.clear();
+                    current_max_age = None;
+                }
+                b"ID" if in_rule => in_id = true,
+                b"AllowedOrigin" if in_rule => in_allowed_origin = true,
+                b"AllowedMethod" if in_rule => in_allowed_method = true,
+                b"AllowedHeader" if in_rule => in_allowed_header = true,
+                b"ExposeHeader" if in_rule => in_expose_header = true,
+                b"MaxAgeSeconds" if in_rule => in_max_age = true,
+                _ => {}
+            },
+            Ok(Event::Text(e)) => {
+                let text = e
+                    .unescape()
+                    .map_err(|e| crate::S3Error::InvalidArgument(e.to_string()))?
+                    .into_owned();
+                if in_id {
+                    current_id = Some(text);
+                } else if in_allowed_origin {
+                    current_origins.push(text);
+                } else if in_allowed_method {
+                    current_methods.push(text);
+                } else if in_allowed_header {
+                    current_headers.push(text);
+                } else if in_expose_header {
+                    current_expose.push(text);
+                } else if in_max_age {
+                    current_max_age = text.parse().ok();
+                }
+            }
+            Ok(Event::End(e)) => match e.name().as_ref() {
+                b"CORSRule" => {
+                    if current_origins.is_empty() {
+                        return Err(crate::S3Error::InvalidArgument(
+                            "CORSRule must have at least one AllowedOrigin".to_string(),
+                        ));
+                    }
+                    if current_methods.is_empty() {
+                        return Err(crate::S3Error::InvalidArgument(
+                            "CORSRule must have at least one AllowedMethod".to_string(),
+                        ));
+                    }
+                    rules.push(CorsRule {
+                        id: current_id.clone(),
+                        allowed_origins: current_origins.clone(),
+                        allowed_methods: current_methods.clone(),
+                        allowed_headers: current_headers.clone(),
+                        expose_headers: current_expose.clone(),
+                        max_age_seconds: current_max_age,
+                    });
+                    in_rule = false;
+                }
+                b"ID" => in_id = false,
+                b"AllowedOrigin" => in_allowed_origin = false,
+                b"AllowedMethod" => in_allowed_method = false,
+                b"AllowedHeader" => in_allowed_header = false,
+                b"ExposeHeader" => in_expose_header = false,
+                b"MaxAgeSeconds" => in_max_age = false,
+                _ => {}
+            },
+            Ok(Event::Eof) => break,
+            Err(e) => {
+                return Err(crate::S3Error::InvalidArgument(e.to_string()));
+            }
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    Ok(CorsConfiguration { rules })
+}
+
 fn write_acl_grant_group(
     w: &mut Writer<Cursor<Vec<u8>>>,
     uri: &str,
@@ -474,6 +873,202 @@ mod tests {
         assert!(xml.contains("<AccessControlPolicy"));
         assert!(xml.contains("<Permission>FULL_CONTROL</Permission>"));
         assert!(!xml.contains("AllUsers"));
+    }
+
+    #[test]
+    fn test_lifecycle_xml_roundtrip() {
+        use crate::s3::types::{LifecycleConfiguration, LifecycleRule, LifecycleStatus};
+        let config = LifecycleConfiguration {
+            rules: vec![
+                LifecycleRule {
+                    id: "expire-logs".into(),
+                    prefix: "logs/".into(),
+                    status: LifecycleStatus::Enabled,
+                    expiration_days: 30,
+                    expiration_date: None,
+                    tags: vec![],
+                },
+                LifecycleRule {
+                    id: "expire-tmp".into(),
+                    prefix: "tmp/".into(),
+                    status: LifecycleStatus::Disabled,
+                    expiration_days: 7,
+                    expiration_date: None,
+                    tags: vec![],
+                },
+            ],
+        };
+        let xml = lifecycle_configuration_xml(&config);
+        assert!(xml.contains("<LifecycleConfiguration"));
+        assert!(xml.contains("<ID>expire-logs</ID>"));
+        assert!(xml.contains("<Prefix>logs/</Prefix>"));
+        assert!(xml.contains("<Status>Enabled</Status>"));
+        assert!(xml.contains("<Days>30</Days>"));
+
+        let parsed = parse_lifecycle_configuration_xml(xml.as_bytes()).unwrap();
+        assert_eq!(parsed.rules.len(), 2);
+        assert_eq!(parsed.rules[0].id, "expire-logs");
+        assert_eq!(parsed.rules[0].prefix, "logs/");
+        assert_eq!(parsed.rules[0].status, LifecycleStatus::Enabled);
+        assert_eq!(parsed.rules[0].expiration_days, 30);
+        assert!(parsed.rules[0].expiration_date.is_none());
+        assert!(parsed.rules[0].tags.is_empty());
+        assert_eq!(parsed.rules[1].status, LifecycleStatus::Disabled);
+    }
+
+    #[test]
+    fn test_lifecycle_xml_invalid_days() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?><LifecycleConfiguration><Rule><ID>r</ID><Filter><Prefix></Prefix></Filter><Status>Enabled</Status><Expiration><Days>0</Days></Expiration></Rule></LifecycleConfiguration>"#;
+        let result = parse_lifecycle_configuration_xml(xml.as_bytes());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_lifecycle_xml_tag_filter_roundtrip() {
+        use crate::s3::types::{LifecycleConfiguration, LifecycleRule, LifecycleStatus, LifecycleTagFilter};
+        let config = LifecycleConfiguration {
+            rules: vec![LifecycleRule {
+                id: "tag-rule".into(),
+                prefix: String::new(),
+                status: LifecycleStatus::Enabled,
+                expiration_days: 10,
+                expiration_date: None,
+                tags: vec![LifecycleTagFilter {
+                    key: "env".into(),
+                    value: "test".into(),
+                }],
+            }],
+        };
+        let xml = lifecycle_configuration_xml(&config);
+        // Single tag without prefix: no <And> wrapper
+        assert!(!xml.contains("<And>"));
+        assert!(xml.contains("<Tag>"));
+        assert!(xml.contains("<Key>env</Key>"));
+        assert!(xml.contains("<Value>test</Value>"));
+
+        let parsed = parse_lifecycle_configuration_xml(xml.as_bytes()).unwrap();
+        assert_eq!(parsed.rules[0].tags.len(), 1);
+        assert_eq!(parsed.rules[0].tags[0].key, "env");
+        assert_eq!(parsed.rules[0].tags[0].value, "test");
+        assert!(parsed.rules[0].prefix.is_empty());
+    }
+
+    #[test]
+    fn test_lifecycle_xml_and_filter_roundtrip() {
+        use crate::s3::types::{LifecycleConfiguration, LifecycleRule, LifecycleStatus, LifecycleTagFilter};
+        let config = LifecycleConfiguration {
+            rules: vec![LifecycleRule {
+                id: "and-rule".into(),
+                prefix: "logs/".into(),
+                status: LifecycleStatus::Enabled,
+                expiration_days: 5,
+                expiration_date: None,
+                tags: vec![
+                    LifecycleTagFilter { key: "env".into(), value: "staging".into() },
+                    LifecycleTagFilter { key: "team".into(), value: "infra".into() },
+                ],
+            }],
+        };
+        let xml = lifecycle_configuration_xml(&config);
+        assert!(xml.contains("<And>"));
+        assert!(xml.contains("<Prefix>logs/</Prefix>"));
+        assert!(xml.contains("<Key>env</Key>"));
+        assert!(xml.contains("<Key>team</Key>"));
+
+        let parsed = parse_lifecycle_configuration_xml(xml.as_bytes()).unwrap();
+        assert_eq!(parsed.rules[0].prefix, "logs/");
+        assert_eq!(parsed.rules[0].tags.len(), 2);
+        assert_eq!(parsed.rules[0].tags[0].key, "env");
+        assert_eq!(parsed.rules[0].tags[1].key, "team");
+    }
+
+    #[test]
+    fn test_lifecycle_xml_date_expiration_roundtrip() {
+        use crate::s3::types::{LifecycleConfiguration, LifecycleRule, LifecycleStatus};
+        let config = LifecycleConfiguration {
+            rules: vec![LifecycleRule {
+                id: "date-rule".into(),
+                prefix: "archive/".into(),
+                status: LifecycleStatus::Enabled,
+                expiration_days: 0,
+                expiration_date: Some("2025-12-31T00:00:00+00:00".into()),
+                tags: vec![],
+            }],
+        };
+        let xml = lifecycle_configuration_xml(&config);
+        assert!(xml.contains("<Date>2025-12-31T00:00:00+00:00</Date>"));
+        assert!(!xml.contains("<Days>"));
+
+        let parsed = parse_lifecycle_configuration_xml(xml.as_bytes()).unwrap();
+        assert_eq!(parsed.rules[0].expiration_days, 0);
+        assert_eq!(
+            parsed.rules[0].expiration_date.as_deref(),
+            Some("2025-12-31T00:00:00+00:00")
+        );
+    }
+
+    #[test]
+    fn test_lifecycle_xml_both_days_and_date_error() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?><LifecycleConfiguration><Rule><ID>r</ID><Filter><Prefix></Prefix></Filter><Status>Enabled</Status><Expiration><Days>5</Days><Date>2025-12-31T00:00:00+00:00</Date></Expiration></Rule></LifecycleConfiguration>"#;
+        let result = parse_lifecycle_configuration_xml(xml.as_bytes());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_cors_xml_roundtrip() {
+        use crate::s3::types::{CorsConfiguration, CorsRule};
+        let config = CorsConfiguration {
+            rules: vec![
+                CorsRule {
+                    id: Some("rule-1".into()),
+                    allowed_origins: vec!["https://example.com".into(), "https://app.example.com".into()],
+                    allowed_methods: vec!["GET".into(), "PUT".into()],
+                    allowed_headers: vec!["*".into()],
+                    expose_headers: vec!["x-amz-request-id".into()],
+                    max_age_seconds: Some(3600),
+                },
+                CorsRule {
+                    id: None,
+                    allowed_origins: vec!["*".into()],
+                    allowed_methods: vec!["GET".into()],
+                    allowed_headers: vec![],
+                    expose_headers: vec![],
+                    max_age_seconds: None,
+                },
+            ],
+        };
+        let xml = cors_configuration_xml(&config);
+        assert!(xml.contains("<CORSConfiguration"));
+        assert!(xml.contains("<AllowedOrigin>https://example.com</AllowedOrigin>"));
+        assert!(xml.contains("<AllowedMethod>GET</AllowedMethod>"));
+        assert!(xml.contains("<MaxAgeSeconds>3600</MaxAgeSeconds>"));
+        assert!(xml.contains("<ID>rule-1</ID>"));
+
+        let parsed = parse_cors_configuration_xml(xml.as_bytes()).unwrap();
+        assert_eq!(parsed.rules.len(), 2);
+        assert_eq!(parsed.rules[0].id.as_deref(), Some("rule-1"));
+        assert_eq!(parsed.rules[0].allowed_origins.len(), 2);
+        assert_eq!(parsed.rules[0].allowed_methods.len(), 2);
+        assert_eq!(parsed.rules[0].allowed_headers, vec!["*"]);
+        assert_eq!(parsed.rules[0].expose_headers, vec!["x-amz-request-id"]);
+        assert_eq!(parsed.rules[0].max_age_seconds, Some(3600));
+        assert_eq!(parsed.rules[1].allowed_origins, vec!["*"]);
+        assert!(parsed.rules[1].id.is_none());
+        assert!(parsed.rules[1].max_age_seconds.is_none());
+    }
+
+    #[test]
+    fn test_cors_xml_missing_origin() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?><CORSConfiguration><CORSRule><AllowedMethod>GET</AllowedMethod></CORSRule></CORSConfiguration>"#;
+        let result = parse_cors_configuration_xml(xml.as_bytes());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_cors_xml_missing_method() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?><CORSConfiguration><CORSRule><AllowedOrigin>*</AllowedOrigin></CORSRule></CORSConfiguration>"#;
+        let result = parse_cors_configuration_xml(xml.as_bytes());
+        assert!(result.is_err());
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BucketMeta {
@@ -75,4 +76,113 @@ pub struct ListObjectsV2Response {
 pub struct CompletedPart {
     pub part_number: u32,
     pub etag: String,
+}
+
+// --- Lifecycle types ---
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum LifecycleStatus {
+    Enabled,
+    Disabled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LifecycleTagFilter {
+    pub key: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LifecycleRule {
+    pub id: String,
+    pub prefix: String,
+    pub status: LifecycleStatus,
+    pub expiration_days: u32,
+    #[serde(default)]
+    pub expiration_date: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<LifecycleTagFilter>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LifecycleConfiguration {
+    pub rules: Vec<LifecycleRule>,
+}
+
+// --- Bucket Policy types ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BucketPolicy {
+    #[serde(rename = "Version")]
+    pub version: String,
+    #[serde(rename = "Statement")]
+    pub statements: Vec<PolicyStatement>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolicyStatement {
+    #[serde(rename = "Sid", skip_serializing_if = "Option::is_none")]
+    pub sid: Option<String>,
+    #[serde(rename = "Effect")]
+    pub effect: PolicyEffect,
+    #[serde(rename = "Principal")]
+    pub principal: PolicyPrincipal,
+    #[serde(rename = "Action")]
+    pub action: OneOrMany<String>,
+    #[serde(rename = "Resource")]
+    pub resource: OneOrMany<String>,
+    #[serde(rename = "Condition", skip_serializing_if = "Option::is_none")]
+    pub condition: Option<PolicyCondition>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum PolicyEffect {
+    Allow,
+    Deny,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PolicyPrincipal {
+    Wildcard(String),
+    Mapped(HashMap<String, OneOrMany<String>>),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum OneOrMany<T> {
+    One(T),
+    Many(Vec<T>),
+}
+
+impl<T> OneOrMany<T> {
+    pub fn as_slice(&self) -> &[T] {
+        match self {
+            OneOrMany::One(v) => std::slice::from_ref(v),
+            OneOrMany::Many(v) => v,
+        }
+    }
+}
+
+pub type PolicyCondition = HashMap<String, HashMap<String, OneOrMany<String>>>;
+
+// --- CORS types ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CorsRule {
+    #[serde(default)]
+    pub id: Option<String>,
+    pub allowed_origins: Vec<String>,
+    pub allowed_methods: Vec<String>,
+    #[serde(default)]
+    pub allowed_headers: Vec<String>,
+    #[serde(default)]
+    pub expose_headers: Vec<String>,
+    #[serde(default)]
+    pub max_age_seconds: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CorsConfiguration {
+    pub rules: Vec<CorsRule>,
 }

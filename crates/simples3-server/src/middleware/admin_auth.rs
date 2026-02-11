@@ -15,7 +15,14 @@ pub async fn admin_auth_middleware(
 ) -> Response {
     let expected_token = match &state.config.admin_token {
         Some(token) => token,
-        None => return next.run(request).await,
+        None => {
+            tracing::warn!("Admin request rejected: SIMPLES3_ADMIN_TOKEN is not configured");
+            return (
+                StatusCode::UNAUTHORIZED,
+                axum::Json(serde_json::json!({ "error": "Admin token not configured" })),
+            )
+                .into_response();
+        }
     };
 
     let provided = request
@@ -37,11 +44,13 @@ pub async fn admin_auth_middleware(
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
+    use sha2::{Digest, Sha256};
+    // Hash both inputs before comparison so length differences
+    // don't leak timing information about the expected token.
+    let hash_a = Sha256::digest(a);
+    let hash_b = Sha256::digest(b);
     let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
+    for (x, y) in hash_a.iter().zip(hash_b.iter()) {
         diff |= x ^ y;
     }
     diff == 0

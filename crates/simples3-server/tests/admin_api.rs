@@ -3,14 +3,21 @@ mod common;
 use common::TestServer;
 use serde_json::Value;
 
+const ADMIN_TOKEN: &str = "test-admin-token";
+
+fn admin_client() -> reqwest::Client {
+    reqwest::Client::new()
+}
+
 #[tokio::test]
 async fn test_admin_create_and_list_buckets() {
-    let server = TestServer::start().await;
-    let client = reqwest::Client::new();
+    let server = TestServer::start_with_admin_token(ADMIN_TOKEN).await;
+    let client = admin_client();
 
     // Create bucket via admin API
     let resp = client
         .put(format!("{}/_admin/buckets/admin-bucket", server.admin_base_url))
+        .header("Authorization", format!("Bearer {}", ADMIN_TOKEN))
         .send()
         .await
         .unwrap();
@@ -19,6 +26,7 @@ async fn test_admin_create_and_list_buckets() {
     // List buckets via admin API
     let resp = client
         .get(format!("{}/_admin/buckets", server.admin_base_url))
+        .header("Authorization", format!("Bearer {}", ADMIN_TOKEN))
         .send()
         .await
         .unwrap();
@@ -30,17 +38,19 @@ async fn test_admin_create_and_list_buckets() {
 
 #[tokio::test]
 async fn test_admin_delete_bucket() {
-    let server = TestServer::start().await;
-    let client = reqwest::Client::new();
+    let server = TestServer::start_with_admin_token(ADMIN_TOKEN).await;
+    let client = admin_client();
 
     client
         .put(format!("{}/_admin/buckets/del-me", server.admin_base_url))
+        .header("Authorization", format!("Bearer {}", ADMIN_TOKEN))
         .send()
         .await
         .unwrap();
 
     let resp = client
         .delete(format!("{}/_admin/buckets/del-me", server.admin_base_url))
+        .header("Authorization", format!("Bearer {}", ADMIN_TOKEN))
         .send()
         .await
         .unwrap();
@@ -48,6 +58,7 @@ async fn test_admin_delete_bucket() {
 
     let resp = client
         .get(format!("{}/_admin/buckets", server.admin_base_url))
+        .header("Authorization", format!("Bearer {}", ADMIN_TOKEN))
         .send()
         .await
         .unwrap();
@@ -57,11 +68,12 @@ async fn test_admin_delete_bucket() {
 
 #[tokio::test]
 async fn test_admin_set_anonymous() {
-    let server = TestServer::start().await;
-    let client = reqwest::Client::new();
+    let server = TestServer::start_with_admin_token(ADMIN_TOKEN).await;
+    let client = admin_client();
 
     client
         .put(format!("{}/_admin/buckets/anon-test", server.admin_base_url))
+        .header("Authorization", format!("Bearer {}", ADMIN_TOKEN))
         .send()
         .await
         .unwrap();
@@ -71,6 +83,7 @@ async fn test_admin_set_anonymous() {
             "{}/_admin/buckets/anon-test/anonymous",
             server.admin_base_url
         ))
+        .header("Authorization", format!("Bearer {}", ADMIN_TOKEN))
         .json(&serde_json::json!({ "enabled": true }))
         .send()
         .await
@@ -79,6 +92,7 @@ async fn test_admin_set_anonymous() {
 
     let resp = client
         .get(format!("{}/_admin/buckets", server.admin_base_url))
+        .header("Authorization", format!("Bearer {}", ADMIN_TOKEN))
         .send()
         .await
         .unwrap();
@@ -88,12 +102,13 @@ async fn test_admin_set_anonymous() {
 
 #[tokio::test]
 async fn test_admin_create_and_list_credentials() {
-    let server = TestServer::start().await;
-    let client = reqwest::Client::new();
+    let server = TestServer::start_with_admin_token(ADMIN_TOKEN).await;
+    let client = admin_client();
 
     // Create credential via admin API
     let resp = client
         .post(format!("{}/_admin/credentials", server.admin_base_url))
+        .header("Authorization", format!("Bearer {}", ADMIN_TOKEN))
         .json(&serde_json::json!({ "description": "test key" }))
         .send()
         .await
@@ -106,6 +121,7 @@ async fn test_admin_create_and_list_credentials() {
     // List credentials (should have 2: the test fixture one + the new one)
     let resp = client
         .get(format!("{}/_admin/credentials", server.admin_base_url))
+        .header("Authorization", format!("Bearer {}", ADMIN_TOKEN))
         .send()
         .await
         .unwrap();
@@ -118,12 +134,13 @@ async fn test_admin_create_and_list_credentials() {
 
 #[tokio::test]
 async fn test_admin_revoke_credential() {
-    let server = TestServer::start().await;
-    let client = reqwest::Client::new();
+    let server = TestServer::start_with_admin_token(ADMIN_TOKEN).await;
+    let client = admin_client();
 
     // Create credential
     let resp = client
         .post(format!("{}/_admin/credentials", server.admin_base_url))
+        .header("Authorization", format!("Bearer {}", ADMIN_TOKEN))
         .json(&serde_json::json!({ "description": "to revoke" }))
         .send()
         .await
@@ -134,6 +151,7 @@ async fn test_admin_revoke_credential() {
     // Revoke it
     let resp = client
         .delete(format!("{}/_admin/credentials/{}", server.admin_base_url, akid))
+        .header("Authorization", format!("Bearer {}", ADMIN_TOKEN))
         .send()
         .await
         .unwrap();
@@ -142,6 +160,7 @@ async fn test_admin_revoke_credential() {
     // Verify it's inactive
     let resp = client
         .get(format!("{}/_admin/credentials", server.admin_base_url))
+        .header("Authorization", format!("Bearer {}", ADMIN_TOKEN))
         .send()
         .await
         .unwrap();
@@ -153,12 +172,13 @@ async fn test_admin_revoke_credential() {
 #[tokio::test]
 async fn test_admin_api_not_on_s3_port() {
     // Admin routes should NOT be served on the S3 port
-    let server = TestServer::start().await;
-    let client = reqwest::Client::new();
+    let server = TestServer::start_with_admin_token(ADMIN_TOKEN).await;
+    let client = admin_client();
 
-    // Admin on admin port works
+    // Admin on admin port works with token
     let resp = client
         .get(format!("{}/_admin/buckets", server.admin_base_url))
+        .header("Authorization", format!("Bearer {}", ADMIN_TOKEN))
         .send()
         .await
         .unwrap();
@@ -182,7 +202,7 @@ async fn test_admin_api_not_on_s3_port() {
 #[tokio::test]
 async fn test_admin_token_required_when_configured() {
     let server = TestServer::start_with_admin_token("supersecret").await;
-    let client = reqwest::Client::new();
+    let client = admin_client();
 
     // Without token → 401
     let resp = client
@@ -214,13 +234,13 @@ async fn test_admin_token_required_when_configured() {
 #[tokio::test]
 async fn test_admin_no_token_when_unconfigured() {
     let server = TestServer::start().await;
-    let client = reqwest::Client::new();
+    let client = admin_client();
 
-    // No token configured → admin accessible without auth
+    // No token configured → admin should be denied (401)
     let resp = client
         .get(format!("{}/_admin/buckets", server.admin_base_url))
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.status(), 401);
 }

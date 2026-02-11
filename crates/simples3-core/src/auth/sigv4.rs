@@ -119,7 +119,7 @@ pub fn verify_signature(
     let key = signing_key(secret_key, &auth.date, &auth.region);
     let computed = hex::encode(hmac_sha256(&key, string_to_sign.as_bytes()));
 
-    if computed == auth.signature {
+    if constant_time_eq(computed.as_bytes(), auth.signature.as_bytes()) {
         Ok(())
     } else {
         Err(S3Error::SignatureDoesNotMatch)
@@ -158,11 +158,23 @@ pub fn verify_presigned_signature(
     let key = signing_key(secret_key, date, region);
     let computed = hex::encode(hmac_sha256(&key, string_to_sign.as_bytes()));
 
-    if computed == signature {
+    if constant_time_eq(computed.as_bytes(), signature.as_bytes()) {
         Ok(())
     } else {
         Err(S3Error::SignatureDoesNotMatch)
     }
+}
+
+/// Constant-time byte comparison to prevent timing attacks.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 #[cfg(test)]

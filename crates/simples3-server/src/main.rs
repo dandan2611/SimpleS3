@@ -2,6 +2,7 @@ use clap::Parser;
 use simples3_core::Config;
 use simples3_server::{AppState, router};
 use std::path::Path;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
@@ -100,6 +101,7 @@ async fn main() {
     tracing::info!("simples3 S3 API listening on {}", config.bind);
 
     let cleanup_handle = tokio::spawn(multipart_cleanup_loop(state.clone()));
+    let lifecycle_handle = tokio::spawn(lifecycle_expiration_loop(state.clone()));
 
     if config.admin_enabled {
         let admin_app = router::build_admin_router(state);
@@ -109,38 +111,41 @@ async fn main() {
         tracing::info!("simples3 admin API listening on {}", config.admin_bind);
 
         let s3_handle = tokio::spawn(async move {
-            axum::serve(s3_listener, s3_app)
+            axum::serve(s3_listener, s3_app.into_make_service_with_connect_info::<SocketAddr>())
                 .with_graceful_shutdown(shutdown_signal())
                 .await
                 .expect("S3 server error");
         });
 
         let admin_handle = tokio::spawn(async move {
-            axum::serve(admin_listener, admin_app).await.expect("Admin server error");
+            axum::serve(admin_listener, admin_app.into_make_service_with_connect_info::<SocketAddr>())
+                .await
+                .expect("Admin server error");
         });
 
         // Wait for S3 server to finish (shutdown signal), then drop admin and cleanup
         let _ = s3_handle.await;
         admin_handle.abort();
         cleanup_handle.abort();
+        lifecycle_handle.abort();
     } else {
         tracing::info!("Admin API is disabled");
-        axum::serve(s3_listener, s3_app)
+        axum::serve(s3_listener, s3_app.into_make_service_with_connect_info::<SocketAddr>())
             .with_graceful_shutdown(shutdown_signal())
             .await
             .expect("S3 server error");
         cleanup_handle.abort();
+        lifecycle_handle.abort();
     }
 }
 
 async fn multipart_cleanup_loop(state: Arc<AppState>) {
     let ttl = state.config.multipart_ttl_secs;
-    if ttl == 0 {
-        tracing::info!("Multipart upload cleanup is disabled (TTL = 0)");
+    let interval_secs = state.config.multipart_cleanup_interval_secs;
+    if ttl == 0 || interval_secs == 0 {
+        tracing::info!("Multipart upload cleanup is disabled (TTL = {ttl}, interval = {interval_secs})");
         return;
     }
-
-    let interval_secs = state.config.multipart_cleanup_interval_secs;
     tracing::info!(
         ttl_secs = ttl,
         interval_secs = interval_secs,
@@ -177,6 +182,104 @@ async fn multipart_cleanup_loop(state: Arc<AppState>) {
                 let _ = state.filestore.cleanup_multipart(&upload.upload_id).await;
                 let _ = state.metadata.delete_multipart_upload(&upload.upload_id);
                 metrics::counter!(simples3_server::metrics::MULTIPART_EXPIRED_TOTAL).increment(1);
+            }
+        }
+    }
+}
+
+async fn lifecycle_expiration_loop(state: Arc<AppState>) {
+    let interval_secs = state.config.lifecycle_scan_interval_secs;
+    if interval_secs == 0 {
+        tracing::info!("Lifecycle expiration scanner is disabled (interval = 0)");
+        return;
+    }
+
+    tracing::info!(
+        interval_secs = interval_secs,
+        "Starting lifecycle expiration scanner"
+    );
+
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+    // Skip first tick so we don't scan immediately on startup
+    interval.tick().await;
+
+    loop {
+        interval.tick().await;
+
+        let configs = match state.metadata.list_lifecycle_configurations() {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to list lifecycle configurations");
+                continue;
+            }
+        };
+
+        let now = chrono::Utc::now();
+
+        for (bucket, config) in configs {
+            for rule in &config.rules {
+                if rule.status != simples3_core::s3::types::LifecycleStatus::Enabled {
+                    continue;
+                }
+
+                let list_req = simples3_core::s3::types::ListObjectsV2Request {
+                    bucket: bucket.clone(),
+                    prefix: rule.prefix.clone(),
+                    delimiter: String::new(),
+                    max_keys: u32::MAX,
+                    continuation_token: None,
+                    start_after: None,
+                };
+
+                let objects = match state.metadata.list_objects_v2(&list_req) {
+                    Ok(resp) => resp.contents,
+                    Err(e) => {
+                        tracing::warn!(bucket = %bucket, error = %e, "Failed to list objects for lifecycle");
+                        continue;
+                    }
+                };
+
+                for obj in objects {
+                    // Tag matching: if rule has tags, all must match
+                    if !rule.tags.is_empty() {
+                        let obj_tags = state
+                            .metadata
+                            .get_object_tagging(&bucket, &obj.key)
+                            .unwrap_or_default();
+                        let all_match = rule.tags.iter().all(|rt| {
+                            obj_tags.get(&rt.key).map_or(false, |v| v == &rt.value)
+                        });
+                        if !all_match {
+                            continue;
+                        }
+                    }
+
+                    // Determine if object should be expired
+                    let should_expire = if let Some(ref date_str) = rule.expiration_date {
+                        // Date-based expiration: expire if now >= date
+                        if let Ok(exp_date) = chrono::DateTime::parse_from_rfc3339(date_str) {
+                            now >= exp_date
+                        } else {
+                            false
+                        }
+                    } else {
+                        // Days-based expiration
+                        let expiration = chrono::Duration::days(rule.expiration_days as i64);
+                        obj.last_modified + expiration < now
+                    };
+
+                    if should_expire {
+                        tracing::info!(
+                            bucket = %bucket,
+                            key = %obj.key,
+                            rule_id = %rule.id,
+                            "Deleting expired object (lifecycle)"
+                        );
+                        let _ = state.metadata.delete_object_meta(&bucket, &obj.key);
+                        let _ = state.filestore.delete_object(&bucket, &obj.key).await;
+                        metrics::counter!(simples3_server::metrics::LIFECYCLE_EXPIRED_TOTAL).increment(1);
+                    }
+                }
             }
         }
     }

@@ -28,7 +28,7 @@ impl TestServer {
     }
 
     pub async fn start_with_init_config(init_config_path: &Path) -> Self {
-        Self::start_inner(false, None, Some(init_config_path.to_path_buf())).await
+        Self::start_inner(false, Some("init-admin-token".into()), Some(init_config_path.to_path_buf())).await
     }
 
     async fn start_inner(
@@ -52,6 +52,11 @@ impl TestServer {
             admin_token,
             multipart_ttl_secs: 86400,
             multipart_cleanup_interval_secs: 3600,
+            lifecycle_scan_interval_secs: 0,
+            cors_origins: None,
+            max_object_size: 5 * 1024 * 1024 * 1024,
+            max_xml_body_size: 256 * 1024,
+            max_policy_body_size: 20 * 1024,
         };
 
         let metadata = MetadataStore::open(&config.metadata_dir).unwrap();
@@ -84,11 +89,15 @@ impl TestServer {
         let admin_addr = admin_listener.local_addr().unwrap();
 
         tokio::spawn(async move {
-            axum::serve(s3_listener, s3_app).await.unwrap();
+            axum::serve(s3_listener, s3_app.into_make_service_with_connect_info::<SocketAddr>())
+                .await
+                .unwrap();
         });
 
         tokio::spawn(async move {
-            axum::serve(admin_listener, admin_app).await.unwrap();
+            axum::serve(admin_listener, admin_app.into_make_service_with_connect_info::<SocketAddr>())
+                .await
+                .unwrap();
         });
 
         Self {

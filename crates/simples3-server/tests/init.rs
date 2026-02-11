@@ -31,6 +31,7 @@ description = "init credential"
     // Verify buckets were created via admin API
     let resp = client
         .get(format!("{}/_admin/buckets", server.admin_base_url))
+        .header("Authorization", "Bearer init-admin-token")
         .send()
         .await
         .unwrap();
@@ -62,6 +63,7 @@ description = "init credential"
     // Verify credentials were created via admin API
     let resp = client
         .get(format!("{}/_admin/credentials", server.admin_base_url))
+        .header("Authorization", "Bearer init-admin-token")
         .send()
         .await
         .unwrap();

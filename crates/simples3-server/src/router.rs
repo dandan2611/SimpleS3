@@ -9,7 +9,7 @@ use axum::{
     extract::{Request, State},
     middleware as axum_mw,
     response::Response,
-    routing::{delete, get, post, put},
+    routing::{delete, get, put},
 };
 use simples3_core::s3::request::{parse_s3_operation, S3Operation};
 use std::collections::HashMap;
@@ -123,6 +123,33 @@ async fn s3_dispatcher(
         S3Operation::GetObjectAcl { bucket, key } => {
             handlers::object::get_object_acl(state, &bucket, &key).await
         }
+        S3Operation::PutBucketLifecycleConfiguration { bucket } => {
+            handlers::lifecycle::put_lifecycle_configuration(state, &bucket, request).await
+        }
+        S3Operation::GetBucketLifecycleConfiguration { bucket } => {
+            handlers::lifecycle::get_lifecycle_configuration(state, &bucket).await
+        }
+        S3Operation::DeleteBucketLifecycleConfiguration { bucket } => {
+            handlers::lifecycle::delete_lifecycle_configuration(state, &bucket).await
+        }
+        S3Operation::PutBucketPolicy { bucket } => {
+            handlers::policy::put_bucket_policy(state, &bucket, request).await
+        }
+        S3Operation::GetBucketPolicy { bucket } => {
+            handlers::policy::get_bucket_policy(state, &bucket).await
+        }
+        S3Operation::DeleteBucketPolicy { bucket } => {
+            handlers::policy::delete_bucket_policy(state, &bucket).await
+        }
+        S3Operation::PutBucketCors { bucket } => {
+            handlers::cors::put_bucket_cors(state, &bucket, request).await
+        }
+        S3Operation::GetBucketCors { bucket } => {
+            handlers::cors::get_bucket_cors(state, &bucket).await
+        }
+        S3Operation::DeleteBucketCors { bucket } => {
+            handlers::cors::delete_bucket_cors(state, &bucket).await
+        }
     }
 }
 
@@ -163,6 +190,10 @@ pub fn build_s3_router(state: Arc<AppState>) -> Router {
         ))
         .layer(axum_mw::from_fn(
             crate::middleware::metrics::metrics_middleware,
+        ))
+        .layer(axum_mw::from_fn_with_state(
+            state.clone(),
+            crate::middleware::cors::cors_middleware,
         ))
         .with_state(state)
 }

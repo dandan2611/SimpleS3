@@ -1,15 +1,17 @@
 use crate::AppState;
 use axum::{
     body::Body,
-    extract::{Request, State},
+    extract::{ConnectInfo, Request, State},
     middleware::Next,
     response::Response,
 };
 use axum::response::IntoResponse;
 use chrono::{NaiveDateTime, Utc};
 use simples3_core::auth::sigv4;
+use simples3_core::s3::policy::RequestContext;
 use simples3_core::s3::request::{parse_s3_operation, S3Operation};
 use std::collections::{BTreeMap, HashMap};
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -103,6 +105,36 @@ pub async fn auth_middleware(
                 _ => {}
             }
         }
+
+        // Evaluate bucket policy for anonymous requests
+        if let Some(ref op) = operation {
+            if let Some(bucket_name) = op.bucket() {
+                if let Ok(policy) = state.metadata.get_bucket_policy(bucket_name) {
+                    let s3_action = simples3_core::s3::policy::operation_to_s3_action(op.name());
+                    let key = extract_key(op);
+                    let ctx = build_request_context(&request, &query);
+                    let decision = simples3_core::s3::policy::evaluate_policy(
+                        &policy,
+                        s3_action,
+                        bucket_name,
+                        key.as_deref(),
+                        None,
+                        Some(&ctx),
+                    );
+                    match decision {
+                        simples3_core::s3::policy::PolicyDecision::ExplicitAllow => {
+                            return next.run(request).await;
+                        }
+                        simples3_core::s3::policy::PolicyDecision::ExplicitDeny => {
+                            return simples3_core::S3Error::AccessDenied.into_response();
+                        }
+                        simples3_core::s3::policy::PolicyDecision::ImplicitDeny => {
+                            // Fall through to existing behavior (AccessDenied below)
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // Get Authorization header
@@ -193,7 +225,30 @@ pub async fn auth_middleware(
         &credential.secret_access_key,
         &payload_hash,
     ) {
-        Ok(()) => next.run(request).await,
+        Ok(()) => {
+            // Evaluate bucket policy for authenticated requests (explicit deny overrides)
+            if let Some(ref op) = operation {
+                if let Some(bucket_name) = op.bucket() {
+                    if let Ok(policy) = state.metadata.get_bucket_policy(bucket_name) {
+                        let s3_action = simples3_core::s3::policy::operation_to_s3_action(op.name());
+                        let key = extract_key(op);
+                        let ctx = build_request_context(&request, &query);
+                        let decision = simples3_core::s3::policy::evaluate_policy(
+                            &policy,
+                            s3_action,
+                            bucket_name,
+                            key.as_deref(),
+                            Some(&auth.access_key_id),
+                            Some(&ctx),
+                        );
+                        if decision == simples3_core::s3::policy::PolicyDecision::ExplicitDeny {
+                            return simples3_core::S3Error::AccessDenied.into_response();
+                        }
+                    }
+                }
+            }
+            next.run(request).await
+        }
         Err(e) => {
             tracing::debug!(
                 method = %method,
@@ -315,4 +370,46 @@ fn verify_presigned_url(
         &cred_record.secret_access_key,
         &signature,
     )
+}
+
+fn build_request_context(request: &Request<Body>, query: &HashMap<String, String>) -> RequestContext {
+    let source_ip = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ci| ci.0.ip());
+    let secure_transport = request
+        .headers()
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v == "https")
+        .unwrap_or_else(|| {
+            request.uri().scheme_str().map_or(false, |s| s == "https")
+        });
+    let s3_prefix = query.get("prefix").cloned();
+    RequestContext {
+        source_ip,
+        current_time: Utc::now(),
+        secure_transport,
+        s3_prefix,
+    }
+}
+
+fn extract_key(op: &S3Operation) -> Option<String> {
+    match op {
+        S3Operation::GetObject { key, .. }
+        | S3Operation::HeadObject { key, .. }
+        | S3Operation::PutObject { key, .. }
+        | S3Operation::DeleteObject { key, .. }
+        | S3Operation::PutObjectTagging { key, .. }
+        | S3Operation::GetObjectTagging { key, .. }
+        | S3Operation::DeleteObjectTagging { key, .. }
+        | S3Operation::PutObjectAcl { key, .. }
+        | S3Operation::GetObjectAcl { key, .. }
+        | S3Operation::CreateMultipartUpload { key, .. }
+        | S3Operation::UploadPart { key, .. }
+        | S3Operation::CompleteMultipartUpload { key, .. }
+        | S3Operation::AbortMultipartUpload { key, .. }
+        | S3Operation::ListParts { key, .. } => Some(key.clone()),
+        _ => None,
+    }
 }

@@ -1,7 +1,7 @@
 use crate::error::S3Error;
 use crate::s3::types::{
-    AccessKeyRecord, BucketMeta, ListObjectsV2Request, ListObjectsV2Response, MultipartUpload,
-    ObjectMeta, PartInfo,
+    AccessKeyRecord, BucketMeta, BucketPolicy, CorsConfiguration, LifecycleConfiguration,
+    ListObjectsV2Request, ListObjectsV2Response, MultipartUpload, ObjectMeta, PartInfo,
 };
 use chrono::Utc;
 use sled::Db;
@@ -12,9 +12,44 @@ const BUCKETS_TREE: &str = "buckets";
 const CREDENTIALS_TREE: &str = "credentials";
 const MULTIPART_TREE: &str = "multipart";
 const TAGGING_TREE: &str = "tagging";
+const LIFECYCLE_TREE: &str = "lifecycle";
+const POLICIES_TREE: &str = "policies";
+const CORS_TREE: &str = "cors";
 
 fn objects_tree_name(bucket: &str) -> String {
     format!("objects:{}", bucket)
+}
+
+/// Validate bucket name against S3 naming rules.
+fn validate_bucket_name(name: &str) -> Result<(), S3Error> {
+    if name.len() < 3 || name.len() > 63 {
+        return Err(S3Error::InvalidArgument(
+            "Bucket name must be between 3 and 63 characters".into(),
+        ));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '.')
+    {
+        return Err(S3Error::InvalidArgument(
+            "Bucket name must contain only lowercase letters, numbers, hyphens, and periods".into(),
+        ));
+    }
+    if name.starts_with('-')
+        || name.starts_with('.')
+        || name.ends_with('-')
+        || name.ends_with('.')
+    {
+        return Err(S3Error::InvalidArgument(
+            "Bucket name must not start or end with a hyphen or period".into(),
+        ));
+    }
+    if name.contains("..") {
+        return Err(S3Error::InvalidArgument(
+            "Bucket name must not contain consecutive periods".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Clone)]
@@ -31,6 +66,7 @@ impl MetadataStore {
     // --- Bucket operations ---
 
     pub fn create_bucket(&self, name: &str) -> Result<BucketMeta, S3Error> {
+        validate_bucket_name(name)?;
         let tree = self.db.open_tree(BUCKETS_TREE).map_err(|e| S3Error::InternalError(e.to_string()))?;
         if tree.contains_key(name).map_err(|e| S3Error::InternalError(e.to_string()))? {
             return Err(S3Error::BucketAlreadyExists);
@@ -83,6 +119,15 @@ impl MetadataStore {
         let tree = self.db.open_tree(BUCKETS_TREE).map_err(|e| S3Error::InternalError(e.to_string()))?;
         tree.remove(name).map_err(|e| S3Error::InternalError(e.to_string()))?;
         self.db.drop_tree(&obj_tree_name).map_err(|e| S3Error::InternalError(e.to_string()))?;
+
+        // Clean up lifecycle, policy, and CORS entries
+        let lifecycle_tree = self.db.open_tree(LIFECYCLE_TREE).map_err(|e| S3Error::InternalError(e.to_string()))?;
+        let _ = lifecycle_tree.remove(name);
+        let policies_tree = self.db.open_tree(POLICIES_TREE).map_err(|e| S3Error::InternalError(e.to_string()))?;
+        let _ = policies_tree.remove(name);
+        let cors_tree = self.db.open_tree(CORS_TREE).map_err(|e| S3Error::InternalError(e.to_string()))?;
+        let _ = cors_tree.remove(name);
+
         Ok(())
     }
 
@@ -360,6 +405,97 @@ impl MetadataStore {
         tree.remove(upload_id).map_err(|e| S3Error::InternalError(e.to_string()))?;
         Ok(())
     }
+
+    // --- Lifecycle configuration operations ---
+
+    pub fn put_lifecycle_configuration(&self, bucket: &str, config: &LifecycleConfiguration) -> Result<(), S3Error> {
+        let _ = self.get_bucket(bucket)?;
+        let tree = self.db.open_tree(LIFECYCLE_TREE).map_err(|e| S3Error::InternalError(e.to_string()))?;
+        let json = serde_json::to_vec(config).map_err(|e| S3Error::InternalError(e.to_string()))?;
+        tree.insert(bucket, json).map_err(|e| S3Error::InternalError(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn get_lifecycle_configuration(&self, bucket: &str) -> Result<LifecycleConfiguration, S3Error> {
+        let _ = self.get_bucket(bucket)?;
+        let tree = self.db.open_tree(LIFECYCLE_TREE).map_err(|e| S3Error::InternalError(e.to_string()))?;
+        match tree.get(bucket).map_err(|e| S3Error::InternalError(e.to_string()))? {
+            Some(bytes) => serde_json::from_slice(&bytes).map_err(|e| S3Error::InternalError(e.to_string())),
+            None => Err(S3Error::NoSuchLifecycleConfiguration),
+        }
+    }
+
+    pub fn delete_lifecycle_configuration(&self, bucket: &str) -> Result<(), S3Error> {
+        let _ = self.get_bucket(bucket)?;
+        let tree = self.db.open_tree(LIFECYCLE_TREE).map_err(|e| S3Error::InternalError(e.to_string()))?;
+        tree.remove(bucket).map_err(|e| S3Error::InternalError(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn list_lifecycle_configurations(&self) -> Result<Vec<(String, LifecycleConfiguration)>, S3Error> {
+        let tree = self.db.open_tree(LIFECYCLE_TREE).map_err(|e| S3Error::InternalError(e.to_string()))?;
+        let mut results = Vec::new();
+        for item in tree.iter() {
+            let (key, val) = item.map_err(|e| S3Error::InternalError(e.to_string()))?;
+            let bucket = String::from_utf8_lossy(&key).into_owned();
+            let config: LifecycleConfiguration = serde_json::from_slice(&val)
+                .map_err(|e| S3Error::InternalError(e.to_string()))?;
+            results.push((bucket, config));
+        }
+        Ok(results)
+    }
+
+    // --- Bucket policy operations ---
+
+    pub fn put_bucket_policy(&self, bucket: &str, policy: &BucketPolicy) -> Result<(), S3Error> {
+        let _ = self.get_bucket(bucket)?;
+        let tree = self.db.open_tree(POLICIES_TREE).map_err(|e| S3Error::InternalError(e.to_string()))?;
+        let json = serde_json::to_vec(policy).map_err(|e| S3Error::InternalError(e.to_string()))?;
+        tree.insert(bucket, json).map_err(|e| S3Error::InternalError(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn get_bucket_policy(&self, bucket: &str) -> Result<BucketPolicy, S3Error> {
+        let _ = self.get_bucket(bucket)?;
+        let tree = self.db.open_tree(POLICIES_TREE).map_err(|e| S3Error::InternalError(e.to_string()))?;
+        match tree.get(bucket).map_err(|e| S3Error::InternalError(e.to_string()))? {
+            Some(bytes) => serde_json::from_slice(&bytes).map_err(|e| S3Error::InternalError(e.to_string())),
+            None => Err(S3Error::NoSuchBucketPolicy),
+        }
+    }
+
+    pub fn delete_bucket_policy(&self, bucket: &str) -> Result<(), S3Error> {
+        let _ = self.get_bucket(bucket)?;
+        let tree = self.db.open_tree(POLICIES_TREE).map_err(|e| S3Error::InternalError(e.to_string()))?;
+        tree.remove(bucket).map_err(|e| S3Error::InternalError(e.to_string()))?;
+        Ok(())
+    }
+
+    // --- CORS configuration operations ---
+
+    pub fn put_cors_configuration(&self, bucket: &str, config: &CorsConfiguration) -> Result<(), S3Error> {
+        let _ = self.get_bucket(bucket)?;
+        let tree = self.db.open_tree(CORS_TREE).map_err(|e| S3Error::InternalError(e.to_string()))?;
+        let json = serde_json::to_vec(config).map_err(|e| S3Error::InternalError(e.to_string()))?;
+        tree.insert(bucket, json).map_err(|e| S3Error::InternalError(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn get_cors_configuration(&self, bucket: &str) -> Result<CorsConfiguration, S3Error> {
+        let _ = self.get_bucket(bucket)?;
+        let tree = self.db.open_tree(CORS_TREE).map_err(|e| S3Error::InternalError(e.to_string()))?;
+        match tree.get(bucket).map_err(|e| S3Error::InternalError(e.to_string()))? {
+            Some(bytes) => serde_json::from_slice(&bytes).map_err(|e| S3Error::InternalError(e.to_string())),
+            None => Err(S3Error::NoSuchCORSConfiguration),
+        }
+    }
+
+    pub fn delete_cors_configuration(&self, bucket: &str) -> Result<(), S3Error> {
+        let _ = self.get_bucket(bucket)?;
+        let tree = self.db.open_tree(CORS_TREE).map_err(|e| S3Error::InternalError(e.to_string()))?;
+        tree.remove(bucket).map_err(|e| S3Error::InternalError(e.to_string()))?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -391,8 +527,8 @@ mod tests {
     #[test]
     fn test_bucket_already_exists() {
         let (store, _dir) = temp_store();
-        store.create_bucket("dup").unwrap();
-        assert!(matches!(store.create_bucket("dup"), Err(S3Error::BucketAlreadyExists)));
+        store.create_bucket("dup-bucket").unwrap();
+        assert!(matches!(store.create_bucket("dup-bucket"), Err(S3Error::BucketAlreadyExists)));
     }
 
     #[test]
@@ -414,9 +550,9 @@ mod tests {
     #[test]
     fn test_object_meta_crud() {
         let (store, _dir) = temp_store();
-        store.create_bucket("b").unwrap();
+        store.create_bucket("test-bkt").unwrap();
         let meta = ObjectMeta {
-            bucket: "b".into(),
+            bucket: "test-bkt".into(),
             key: "k".into(),
             size: 42,
             etag: "etag".into(),
@@ -425,19 +561,19 @@ mod tests {
             public: false,
         };
         store.put_object_meta(&meta).unwrap();
-        let fetched = store.get_object_meta("b", "k").unwrap();
+        let fetched = store.get_object_meta("test-bkt", "k").unwrap();
         assert_eq!(fetched.size, 42);
-        store.delete_object_meta("b", "k").unwrap();
-        assert!(matches!(store.get_object_meta("b", "k"), Err(S3Error::NoSuchKey)));
+        store.delete_object_meta("test-bkt", "k").unwrap();
+        assert!(matches!(store.get_object_meta("test-bkt", "k"), Err(S3Error::NoSuchKey)));
     }
 
     #[test]
     fn test_list_objects_prefix() {
         let (store, _dir) = temp_store();
-        store.create_bucket("b").unwrap();
+        store.create_bucket("test-bkt").unwrap();
         for key in ["photos/a.jpg", "photos/b.jpg", "docs/c.pdf"] {
             store.put_object_meta(&ObjectMeta {
-                bucket: "b".into(),
+                bucket: "test-bkt".into(),
                 key: key.into(),
                 size: 1,
                 etag: "e".into(),
@@ -447,7 +583,7 @@ mod tests {
             }).unwrap();
         }
         let resp = store.list_objects_v2(&ListObjectsV2Request {
-            bucket: "b".into(),
+            bucket: "test-bkt".into(),
             prefix: "photos/".into(),
             delimiter: String::new(),
             max_keys: 1000,
@@ -460,10 +596,10 @@ mod tests {
     #[test]
     fn test_list_objects_delimiter() {
         let (store, _dir) = temp_store();
-        store.create_bucket("b").unwrap();
+        store.create_bucket("test-bkt").unwrap();
         for key in ["photos/a.jpg", "photos/b.jpg", "docs/c.pdf", "root.txt"] {
             store.put_object_meta(&ObjectMeta {
-                bucket: "b".into(),
+                bucket: "test-bkt".into(),
                 key: key.into(),
                 size: 1,
                 etag: "e".into(),
@@ -473,7 +609,7 @@ mod tests {
             }).unwrap();
         }
         let resp = store.list_objects_v2(&ListObjectsV2Request {
-            bucket: "b".into(),
+            bucket: "test-bkt".into(),
             prefix: String::new(),
             delimiter: "/".into(),
             max_keys: 1000,
@@ -487,10 +623,10 @@ mod tests {
     #[test]
     fn test_list_objects_pagination() {
         let (store, _dir) = temp_store();
-        store.create_bucket("b").unwrap();
+        store.create_bucket("test-bkt").unwrap();
         for i in 0..5 {
             store.put_object_meta(&ObjectMeta {
-                bucket: "b".into(),
+                bucket: "test-bkt".into(),
                 key: format!("key{}", i),
                 size: 1,
                 etag: "e".into(),
@@ -500,7 +636,7 @@ mod tests {
             }).unwrap();
         }
         let resp = store.list_objects_v2(&ListObjectsV2Request {
-            bucket: "b".into(),
+            bucket: "test-bkt".into(),
             prefix: String::new(),
             delimiter: String::new(),
             max_keys: 2,
@@ -512,7 +648,7 @@ mod tests {
         assert!(resp.next_continuation_token.is_some());
 
         let resp2 = store.list_objects_v2(&ListObjectsV2Request {
-            bucket: "b".into(),
+            bucket: "test-bkt".into(),
             prefix: String::new(),
             delimiter: String::new(),
             max_keys: 2,
@@ -525,9 +661,9 @@ mod tests {
     #[test]
     fn test_object_tagging_crud() {
         let (store, _dir) = temp_store();
-        store.create_bucket("b").unwrap();
+        store.create_bucket("test-bkt").unwrap();
         store.put_object_meta(&ObjectMeta {
-            bucket: "b".into(),
+            bucket: "test-bkt".into(),
             key: "k".into(),
             size: 10,
             etag: "e".into(),
@@ -537,32 +673,32 @@ mod tests {
         }).unwrap();
 
         // No tags initially
-        let tags = store.get_object_tagging("b", "k").unwrap();
+        let tags = store.get_object_tagging("test-bkt", "k").unwrap();
         assert!(tags.is_empty());
 
         // Put tags
         let mut tags = HashMap::new();
         tags.insert("env".into(), "prod".into());
         tags.insert("team".into(), "eng".into());
-        store.put_object_tagging("b", "k", &tags).unwrap();
+        store.put_object_tagging("test-bkt", "k", &tags).unwrap();
 
         // Get tags
-        let fetched = store.get_object_tagging("b", "k").unwrap();
+        let fetched = store.get_object_tagging("test-bkt", "k").unwrap();
         assert_eq!(fetched.len(), 2);
         assert_eq!(fetched.get("env").unwrap(), "prod");
 
         // Delete tags
-        store.delete_object_tagging("b", "k").unwrap();
-        let fetched = store.get_object_tagging("b", "k").unwrap();
+        store.delete_object_tagging("test-bkt", "k").unwrap();
+        let fetched = store.get_object_tagging("test-bkt", "k").unwrap();
         assert!(fetched.is_empty());
     }
 
     #[test]
     fn test_tagging_cleanup_on_object_delete() {
         let (store, _dir) = temp_store();
-        store.create_bucket("b").unwrap();
+        store.create_bucket("test-bkt").unwrap();
         store.put_object_meta(&ObjectMeta {
-            bucket: "b".into(),
+            bucket: "test-bkt".into(),
             key: "k".into(),
             size: 10,
             etag: "e".into(),
@@ -573,14 +709,14 @@ mod tests {
 
         let mut tags = HashMap::new();
         tags.insert("foo".into(), "bar".into());
-        store.put_object_tagging("b", "k", &tags).unwrap();
+        store.put_object_tagging("test-bkt", "k", &tags).unwrap();
 
         // Delete object — tags should be cleaned up
-        store.delete_object_meta("b", "k").unwrap();
+        store.delete_object_meta("test-bkt", "k").unwrap();
 
         // Re-create object and verify tags are gone
         store.put_object_meta(&ObjectMeta {
-            bucket: "b".into(),
+            bucket: "test-bkt".into(),
             key: "k".into(),
             size: 10,
             etag: "e".into(),
@@ -588,7 +724,7 @@ mod tests {
             last_modified: Utc::now(),
             public: false,
         }).unwrap();
-        let fetched = store.get_object_tagging("b", "k").unwrap();
+        let fetched = store.get_object_tagging("test-bkt", "k").unwrap();
         assert!(fetched.is_empty());
     }
 
@@ -615,7 +751,7 @@ mod tests {
         let (store, _dir) = temp_store();
         let upload = MultipartUpload {
             upload_id: "up1".into(),
-            bucket: "b".into(),
+            bucket: "test-bkt".into(),
             key: "k".into(),
             created: Utc::now(),
             parts: vec![],
@@ -637,6 +773,184 @@ mod tests {
     }
 
     #[test]
+    fn test_lifecycle_crud() {
+        use crate::s3::types::{LifecycleConfiguration, LifecycleRule, LifecycleStatus};
+        let (store, _dir) = temp_store();
+        store.create_bucket("test-bkt").unwrap();
+
+        // No lifecycle initially
+        assert!(matches!(
+            store.get_lifecycle_configuration("test-bkt"),
+            Err(S3Error::NoSuchLifecycleConfiguration)
+        ));
+
+        let config = LifecycleConfiguration {
+            rules: vec![LifecycleRule {
+                id: "expire-logs".into(),
+                prefix: "logs/".into(),
+                status: LifecycleStatus::Enabled,
+                expiration_days: 30,
+                expiration_date: None,
+                tags: vec![],
+            }],
+        };
+        store.put_lifecycle_configuration("test-bkt", &config).unwrap();
+
+        let fetched = store.get_lifecycle_configuration("test-bkt").unwrap();
+        assert_eq!(fetched.rules.len(), 1);
+        assert_eq!(fetched.rules[0].expiration_days, 30);
+
+        let all = store.list_lifecycle_configurations().unwrap();
+        assert_eq!(all.len(), 1);
+
+        store.delete_lifecycle_configuration("test-bkt").unwrap();
+        assert!(matches!(
+            store.get_lifecycle_configuration("test-bkt"),
+            Err(S3Error::NoSuchLifecycleConfiguration)
+        ));
+    }
+
+    #[test]
+    fn test_policy_crud() {
+        use crate::s3::types::{BucketPolicy, OneOrMany, PolicyEffect, PolicyPrincipal, PolicyStatement};
+        let (store, _dir) = temp_store();
+        store.create_bucket("test-bkt").unwrap();
+
+        assert!(matches!(
+            store.get_bucket_policy("test-bkt"),
+            Err(S3Error::NoSuchBucketPolicy)
+        ));
+
+        let policy = BucketPolicy {
+            version: "2012-10-17".into(),
+            statements: vec![PolicyStatement {
+                sid: Some("AllowAnon".into()),
+                effect: PolicyEffect::Allow,
+                principal: PolicyPrincipal::Wildcard("*".into()),
+                action: OneOrMany::One("s3:GetObject".into()),
+                resource: OneOrMany::One("arn:aws:s3:::test-bkt/*".into()),
+                condition: None,
+            }],
+        };
+        store.put_bucket_policy("test-bkt", &policy).unwrap();
+
+        let fetched = store.get_bucket_policy("test-bkt").unwrap();
+        assert_eq!(fetched.statements.len(), 1);
+
+        store.delete_bucket_policy("test-bkt").unwrap();
+        assert!(matches!(
+            store.get_bucket_policy("test-bkt"),
+            Err(S3Error::NoSuchBucketPolicy)
+        ));
+    }
+
+    #[test]
+    fn test_delete_bucket_cleans_lifecycle_and_policy() {
+        use crate::s3::types::{BucketPolicy, LifecycleConfiguration, LifecycleRule, LifecycleStatus, OneOrMany, PolicyEffect, PolicyPrincipal, PolicyStatement};
+        let (store, _dir) = temp_store();
+        store.create_bucket("test-bkt").unwrap();
+
+        let config = LifecycleConfiguration {
+            rules: vec![LifecycleRule {
+                id: "r".into(),
+                prefix: "".into(),
+                status: LifecycleStatus::Enabled,
+                expiration_days: 1,
+                expiration_date: None,
+                tags: vec![],
+            }],
+        };
+        store.put_lifecycle_configuration("test-bkt", &config).unwrap();
+
+        let policy = BucketPolicy {
+            version: "2012-10-17".into(),
+            statements: vec![PolicyStatement {
+                sid: None,
+                effect: PolicyEffect::Allow,
+                principal: PolicyPrincipal::Wildcard("*".into()),
+                action: OneOrMany::One("s3:GetObject".into()),
+                resource: OneOrMany::One("arn:aws:s3:::test-bkt/*".into()),
+                condition: None,
+            }],
+        };
+        store.put_bucket_policy("test-bkt", &policy).unwrap();
+
+        store.delete_bucket("test-bkt").unwrap();
+
+        // Re-create bucket and verify lifecycle/policy are gone
+        store.create_bucket("test-bkt").unwrap();
+        assert!(matches!(
+            store.get_lifecycle_configuration("test-bkt"),
+            Err(S3Error::NoSuchLifecycleConfiguration)
+        ));
+        assert!(matches!(
+            store.get_bucket_policy("test-bkt"),
+            Err(S3Error::NoSuchBucketPolicy)
+        ));
+    }
+
+    #[test]
+    fn test_cors_crud() {
+        use crate::s3::types::{CorsConfiguration, CorsRule};
+        let (store, _dir) = temp_store();
+        store.create_bucket("test-bkt").unwrap();
+
+        assert!(matches!(
+            store.get_cors_configuration("test-bkt"),
+            Err(S3Error::NoSuchCORSConfiguration)
+        ));
+
+        let config = CorsConfiguration {
+            rules: vec![CorsRule {
+                id: Some("rule1".into()),
+                allowed_origins: vec!["https://example.com".into()],
+                allowed_methods: vec!["GET".into(), "PUT".into()],
+                allowed_headers: vec!["*".into()],
+                expose_headers: vec![],
+                max_age_seconds: Some(3600),
+            }],
+        };
+        store.put_cors_configuration("test-bkt", &config).unwrap();
+
+        let fetched = store.get_cors_configuration("test-bkt").unwrap();
+        assert_eq!(fetched.rules.len(), 1);
+        assert_eq!(fetched.rules[0].allowed_origins, vec!["https://example.com"]);
+
+        store.delete_cors_configuration("test-bkt").unwrap();
+        assert!(matches!(
+            store.get_cors_configuration("test-bkt"),
+            Err(S3Error::NoSuchCORSConfiguration)
+        ));
+    }
+
+    #[test]
+    fn test_delete_bucket_cleans_cors() {
+        use crate::s3::types::{CorsConfiguration, CorsRule};
+        let (store, _dir) = temp_store();
+        store.create_bucket("test-bkt").unwrap();
+
+        let config = CorsConfiguration {
+            rules: vec![CorsRule {
+                id: None,
+                allowed_origins: vec!["*".into()],
+                allowed_methods: vec!["GET".into()],
+                allowed_headers: vec![],
+                expose_headers: vec![],
+                max_age_seconds: None,
+            }],
+        };
+        store.put_cors_configuration("test-bkt", &config).unwrap();
+
+        store.delete_bucket("test-bkt").unwrap();
+
+        store.create_bucket("test-bkt").unwrap();
+        assert!(matches!(
+            store.get_cors_configuration("test-bkt"),
+            Err(S3Error::NoSuchCORSConfiguration)
+        ));
+    }
+
+    #[test]
     fn test_list_multipart_uploads() {
         let (store, _dir) = temp_store();
 
@@ -648,7 +962,7 @@ mod tests {
         for id in ["up1", "up2"] {
             store.create_multipart_upload(&MultipartUpload {
                 upload_id: id.into(),
-                bucket: "b".into(),
+                bucket: "test-bkt".into(),
                 key: "k".into(),
                 created: Utc::now(),
                 parts: vec![],

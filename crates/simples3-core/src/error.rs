@@ -24,9 +24,15 @@ pub enum S3Error {
     InvalidPart,
     #[error("Invalid part order")]
     InvalidPartOrder,
+    #[error("The lifecycle configuration does not exist")]
+    NoSuchLifecycleConfiguration,
+    #[error("The bucket policy does not exist")]
+    NoSuchBucketPolicy,
+    #[error("The CORS configuration does not exist for this bucket")]
+    NoSuchCORSConfiguration,
     #[error("Invalid argument")]
     InvalidArgument(String),
-    #[error("Internal error: {0}")]
+    #[error("Internal server error")]
     InternalError(String),
 }
 
@@ -42,6 +48,9 @@ impl S3Error {
             S3Error::SignatureDoesNotMatch => "SignatureDoesNotMatch",
             S3Error::InvalidPart => "InvalidPart",
             S3Error::InvalidPartOrder => "InvalidPartOrder",
+            S3Error::NoSuchLifecycleConfiguration => "NoSuchLifecycleConfiguration",
+            S3Error::NoSuchBucketPolicy => "NoSuchBucketPolicy",
+            S3Error::NoSuchCORSConfiguration => "NoSuchCORSConfiguration",
             S3Error::InvalidArgument(_) => "InvalidArgument",
             S3Error::InternalError(_) => "InternalError",
         }
@@ -49,9 +58,12 @@ impl S3Error {
 
     pub fn status_code(&self) -> StatusCode {
         match self {
-            S3Error::NoSuchBucket | S3Error::NoSuchKey | S3Error::NoSuchUpload => {
-                StatusCode::NOT_FOUND
-            }
+            S3Error::NoSuchBucket
+            | S3Error::NoSuchKey
+            | S3Error::NoSuchUpload
+            | S3Error::NoSuchLifecycleConfiguration
+            | S3Error::NoSuchBucketPolicy
+            | S3Error::NoSuchCORSConfiguration => StatusCode::NOT_FOUND,
             S3Error::BucketAlreadyExists => StatusCode::CONFLICT,
             S3Error::BucketNotEmpty => StatusCode::CONFLICT,
             S3Error::AccessDenied | S3Error::SignatureDoesNotMatch => StatusCode::FORBIDDEN,
@@ -82,6 +94,10 @@ impl S3Error {
 impl IntoResponse for S3Error {
     fn into_response(self) -> Response {
         let status = self.status_code();
+        // Log internal errors server-side but don't leak details to clients
+        if let S3Error::InternalError(ref detail) = self {
+            tracing::error!(detail = %detail, "Internal server error");
+        }
         let body = self.to_xml();
         (status, [("content-type", "application/xml")], body).into_response()
     }

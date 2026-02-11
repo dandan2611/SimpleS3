@@ -72,6 +72,11 @@ pub async fn metrics_handler(State(state): State<Arc<AppState>>) -> impl IntoRes
         metrics::gauge!(crate::metrics::MULTIPART_OLDEST_AGE_SECONDS).set(oldest_age);
     }
 
+    if let Ok(lifecycle_configs) = state.metadata.list_lifecycle_configurations() {
+        let total_rules: usize = lifecycle_configs.iter().map(|(_, c)| c.rules.len()).sum();
+        metrics::gauge!(crate::metrics::LIFECYCLE_RULES_TOTAL).set(total_rules as f64);
+    }
+
     let uptime = state.start_time.elapsed().as_secs_f64();
     metrics::gauge!("simples3_uptime_seconds").set(uptime);
 

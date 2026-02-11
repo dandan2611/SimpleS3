@@ -22,6 +22,15 @@ pub enum S3Operation {
     DeleteObjects { bucket: String },
     PutObjectAcl { bucket: String, key: String },
     GetObjectAcl { bucket: String, key: String },
+    PutBucketLifecycleConfiguration { bucket: String },
+    GetBucketLifecycleConfiguration { bucket: String },
+    DeleteBucketLifecycleConfiguration { bucket: String },
+    PutBucketPolicy { bucket: String },
+    GetBucketPolicy { bucket: String },
+    DeleteBucketPolicy { bucket: String },
+    PutBucketCors { bucket: String },
+    GetBucketCors { bucket: String },
+    DeleteBucketCors { bucket: String },
 }
 
 impl S3Operation {
@@ -46,7 +55,16 @@ impl S3Operation {
             | S3Operation::DeleteObjectTagging { bucket, .. }
             | S3Operation::PutObjectAcl { bucket, .. }
             | S3Operation::GetObjectAcl { bucket, .. } => Some(bucket),
-            S3Operation::DeleteObjects { bucket } => Some(bucket),
+            S3Operation::DeleteObjects { bucket }
+            | S3Operation::PutBucketLifecycleConfiguration { bucket }
+            | S3Operation::GetBucketLifecycleConfiguration { bucket }
+            | S3Operation::DeleteBucketLifecycleConfiguration { bucket }
+            | S3Operation::PutBucketPolicy { bucket }
+            | S3Operation::GetBucketPolicy { bucket }
+            | S3Operation::DeleteBucketPolicy { bucket }
+            | S3Operation::PutBucketCors { bucket }
+            | S3Operation::GetBucketCors { bucket }
+            | S3Operation::DeleteBucketCors { bucket } => Some(bucket),
         }
     }
 
@@ -72,6 +90,15 @@ impl S3Operation {
             S3Operation::DeleteObjects { .. } => "DeleteObjects",
             S3Operation::PutObjectAcl { .. } => "PutObjectAcl",
             S3Operation::GetObjectAcl { .. } => "GetObjectAcl",
+            S3Operation::PutBucketLifecycleConfiguration { .. } => "PutBucketLifecycleConfiguration",
+            S3Operation::GetBucketLifecycleConfiguration { .. } => "GetBucketLifecycleConfiguration",
+            S3Operation::DeleteBucketLifecycleConfiguration { .. } => "DeleteBucketLifecycleConfiguration",
+            S3Operation::PutBucketPolicy { .. } => "PutBucketPolicy",
+            S3Operation::GetBucketPolicy { .. } => "GetBucketPolicy",
+            S3Operation::DeleteBucketPolicy { .. } => "DeleteBucketPolicy",
+            S3Operation::PutBucketCors { .. } => "PutBucketCors",
+            S3Operation::GetBucketCors { .. } => "GetBucketCors",
+            S3Operation::DeleteBucketCors { .. } => "DeleteBucketCors",
         }
     }
 
@@ -86,6 +113,9 @@ impl S3Operation {
                 | S3Operation::ListParts { .. }
                 | S3Operation::GetObjectTagging { .. }
                 | S3Operation::GetObjectAcl { .. }
+                | S3Operation::GetBucketLifecycleConfiguration { .. }
+                | S3Operation::GetBucketPolicy { .. }
+                | S3Operation::GetBucketCors { .. }
         )
     }
 }
@@ -115,6 +145,36 @@ pub fn parse_s3_operation(
 
     // Bucket-level operations (no key)
     if key.is_empty() {
+        // Lifecycle configuration
+        if query.contains_key("lifecycle") {
+            return match *method {
+                http::Method::PUT => Some(S3Operation::PutBucketLifecycleConfiguration { bucket }),
+                http::Method::GET => Some(S3Operation::GetBucketLifecycleConfiguration { bucket }),
+                http::Method::DELETE => Some(S3Operation::DeleteBucketLifecycleConfiguration { bucket }),
+                _ => None,
+            };
+        }
+
+        // CORS configuration
+        if query.contains_key("cors") {
+            return match *method {
+                http::Method::PUT => Some(S3Operation::PutBucketCors { bucket }),
+                http::Method::GET => Some(S3Operation::GetBucketCors { bucket }),
+                http::Method::DELETE => Some(S3Operation::DeleteBucketCors { bucket }),
+                _ => None,
+            };
+        }
+
+        // Bucket policy
+        if query.contains_key("policy") {
+            return match *method {
+                http::Method::PUT => Some(S3Operation::PutBucketPolicy { bucket }),
+                http::Method::GET => Some(S3Operation::GetBucketPolicy { bucket }),
+                http::Method::DELETE => Some(S3Operation::DeleteBucketPolicy { bucket }),
+                _ => None,
+            };
+        }
+
         if query.contains_key("delete") && *method == http::Method::POST {
             return Some(S3Operation::DeleteObjects { bucket });
         }
@@ -378,5 +438,95 @@ mod tests {
                 key: "mykey".into()
             })
         );
+    }
+
+    #[test]
+    fn test_parse_put_lifecycle() {
+        let op = parse_s3_operation(
+            &http::Method::PUT,
+            "/mybucket",
+            &query(&[("lifecycle", "")]),
+        );
+        assert_eq!(op, Some(S3Operation::PutBucketLifecycleConfiguration { bucket: "mybucket".into() }));
+    }
+
+    #[test]
+    fn test_parse_get_lifecycle() {
+        let op = parse_s3_operation(
+            &http::Method::GET,
+            "/mybucket",
+            &query(&[("lifecycle", "")]),
+        );
+        assert_eq!(op, Some(S3Operation::GetBucketLifecycleConfiguration { bucket: "mybucket".into() }));
+    }
+
+    #[test]
+    fn test_parse_delete_lifecycle() {
+        let op = parse_s3_operation(
+            &http::Method::DELETE,
+            "/mybucket",
+            &query(&[("lifecycle", "")]),
+        );
+        assert_eq!(op, Some(S3Operation::DeleteBucketLifecycleConfiguration { bucket: "mybucket".into() }));
+    }
+
+    #[test]
+    fn test_parse_put_policy() {
+        let op = parse_s3_operation(
+            &http::Method::PUT,
+            "/mybucket",
+            &query(&[("policy", "")]),
+        );
+        assert_eq!(op, Some(S3Operation::PutBucketPolicy { bucket: "mybucket".into() }));
+    }
+
+    #[test]
+    fn test_parse_get_policy() {
+        let op = parse_s3_operation(
+            &http::Method::GET,
+            "/mybucket",
+            &query(&[("policy", "")]),
+        );
+        assert_eq!(op, Some(S3Operation::GetBucketPolicy { bucket: "mybucket".into() }));
+    }
+
+    #[test]
+    fn test_parse_delete_policy() {
+        let op = parse_s3_operation(
+            &http::Method::DELETE,
+            "/mybucket",
+            &query(&[("policy", "")]),
+        );
+        assert_eq!(op, Some(S3Operation::DeleteBucketPolicy { bucket: "mybucket".into() }));
+    }
+
+    #[test]
+    fn test_parse_put_cors() {
+        let op = parse_s3_operation(
+            &http::Method::PUT,
+            "/mybucket",
+            &query(&[("cors", "")]),
+        );
+        assert_eq!(op, Some(S3Operation::PutBucketCors { bucket: "mybucket".into() }));
+    }
+
+    #[test]
+    fn test_parse_get_cors() {
+        let op = parse_s3_operation(
+            &http::Method::GET,
+            "/mybucket",
+            &query(&[("cors", "")]),
+        );
+        assert_eq!(op, Some(S3Operation::GetBucketCors { bucket: "mybucket".into() }));
+    }
+
+    #[test]
+    fn test_parse_delete_cors() {
+        let op = parse_s3_operation(
+            &http::Method::DELETE,
+            "/mybucket",
+            &query(&[("cors", "")]),
+        );
+        assert_eq!(op, Some(S3Operation::DeleteBucketCors { bucket: "mybucket".into() }));
     }
 }

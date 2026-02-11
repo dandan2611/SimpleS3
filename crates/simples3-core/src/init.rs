@@ -18,6 +18,8 @@ pub struct InitBucket {
     pub anonymous_read: bool,
     #[serde(default)]
     pub anonymous_list_public: bool,
+    #[serde(default)]
+    pub cors_origins: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -69,6 +71,31 @@ pub fn apply(config: &InitConfig, metadata: &MetadataStore) -> Result<(), String
                     )
                 })?;
             tracing::info!(bucket = %bucket.name, "Init: enabled anonymous list public");
+        }
+        if let Some(ref origins) = bucket.cors_origins {
+            use crate::s3::types::{CorsConfiguration, CorsRule};
+            let cors_config = CorsConfiguration {
+                rules: vec![CorsRule {
+                    id: Some("init-cors".into()),
+                    allowed_origins: origins.clone(),
+                    allowed_methods: vec![
+                        "GET".into(), "PUT".into(), "POST".into(),
+                        "DELETE".into(), "HEAD".into(),
+                    ],
+                    allowed_headers: vec!["*".into()],
+                    expose_headers: vec![],
+                    max_age_seconds: None,
+                }],
+            };
+            metadata
+                .put_cors_configuration(&bucket.name, &cors_config)
+                .map_err(|e| {
+                    format!(
+                        "Failed to set CORS on bucket '{}': {}",
+                        bucket.name, e
+                    )
+                })?;
+            tracing::info!(bucket = %bucket.name, "Init: configured CORS");
         }
     }
 
@@ -155,11 +182,13 @@ description = "Development"
                     name: "bucket-a".into(),
                     anonymous_read: false,
                     anonymous_list_public: false,
+                    cors_origins: None,
                 },
                 InitBucket {
                     name: "bucket-b".into(),
                     anonymous_read: false,
                     anonymous_list_public: false,
+                    cors_origins: None,
                 },
             ],
             credentials: vec![InitCredential {
@@ -185,6 +214,7 @@ description = "Development"
                 name: "idem-bucket".into(),
                 anonymous_read: false,
                 anonymous_list_public: false,
+                cors_origins: None,
             }],
             credentials: vec![InitCredential {
                 access_key_id: "AKID_IDEM".into(),
@@ -210,6 +240,7 @@ description = "Development"
                 name: "public".into(),
                 anonymous_read: true,
                 anonymous_list_public: false,
+                cors_origins: None,
             }],
             credentials: vec![],
         };
@@ -217,5 +248,24 @@ description = "Development"
 
         let bucket = store.get_bucket("public").unwrap();
         assert!(bucket.anonymous_read);
+    }
+
+    #[test]
+    fn test_apply_cors_origins() {
+        let (store, _dir) = temp_store();
+        let config = InitConfig {
+            buckets: vec![InitBucket {
+                name: "cors-bkt".into(),
+                anonymous_read: false,
+                anonymous_list_public: false,
+                cors_origins: Some(vec!["https://example.com".into()]),
+            }],
+            credentials: vec![],
+        };
+        apply(&config, &store).unwrap();
+
+        let cors = store.get_cors_configuration("cors-bkt").unwrap();
+        assert_eq!(cors.rules.len(), 1);
+        assert_eq!(cors.rules[0].allowed_origins, vec!["https://example.com"]);
     }
 }
