@@ -27,9 +27,29 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
-  docker:
+  e2e:
     runs-on: ubuntu-latest
     needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install AWS CLI
+        run: |
+          curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o awscliv2.zip
+          unzip -q awscliv2.zip
+          sudo ./aws/install
+          rm -rf awscliv2.zip aws/
+
+      - name: Run E2E tests
+        run: ./tests/e2e.sh
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: [build, e2e]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     permissions:
       contents: read
