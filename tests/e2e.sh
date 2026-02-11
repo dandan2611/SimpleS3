@@ -174,12 +174,23 @@ echo "All prerequisites found."
 # Build & Setup
 # ==============================================================================
 
-log_section "Building simples3-server"
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-cargo build --release -p simples3-server --manifest-path "$PROJECT_ROOT/Cargo.toml"
+# Accept an optional path to a pre-built server binary
+SERVER_BIN="${1:-}"
+
+if [[ -n "$SERVER_BIN" ]]; then
+    if [[ ! -x "$SERVER_BIN" ]]; then
+        echo -e "${RED}Provided binary is not executable: $SERVER_BIN${NC}"
+        exit 1
+    fi
+    echo "Using provided binary: $SERVER_BIN"
+else
+    log_section "Building simples3-server"
+    cargo build --release -p simples3-server --manifest-path "$PROJECT_ROOT/Cargo.toml"
+    SERVER_BIN="$PROJECT_ROOT/target/release/simples3-server"
+fi
 
 # Create temp directories
 TMPDIR_BASE="$(mktemp -d)"
@@ -203,7 +214,7 @@ SIMPLES3_MAX_OBJECT_SIZE="10485760" \
 SIMPLES3_MULTIPART_CLEANUP_INTERVAL="0" \
 SIMPLES3_LIFECYCLE_SCAN_INTERVAL="0" \
 SIMPLES3_CORS_ORIGINS="https://global-allowed.example.com" \
-"$PROJECT_ROOT/target/release/simples3-server" &
+"$SERVER_BIN" &
 SERVER_PID=$!
 
 # Wait for server health
