@@ -1,0 +1,60 @@
+stages = ["build", "test"]
+
+workflow "simples3-ci" {
+    on push {
+        branches = ["main", "flow"]
+    }
+
+    on pull_request {
+        branches = ["main"]
+    }
+}
+
+job "build" {
+    stage = "build"
+    image = "rust:1.83-bookworm"
+
+    step checkout {}
+
+    step run {
+        name = "Build"
+        command = "cargo build --release --workspace"
+    }
+
+    step run {
+        name = "Test"
+        command = "cargo test --workspace"
+    }
+
+    step upload_artifact {
+        name = "simples3-server-linux"
+        paths = ["target/release/simples3-server"]
+    }
+}
+
+job "e2e" {
+    stage = "test"
+    image = "rust:1.83-bookworm"
+    needs = ["build"]
+
+    step checkout {}
+
+    step download_artifact {
+        name = "simples3-server-linux"
+    }
+
+    step run {
+        name = "Setup binary"
+        command = "chmod +x simples3-server && mv simples3-server /usr/local/bin/"
+    }
+
+    step run {
+        name = "Install AWS CLI"
+        command = "apt-get update -qq && apt-get install -y -qq unzip curl > /dev/null && curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o awscliv2.zip && unzip -q awscliv2.zip && ./aws/install && rm -rf awscliv2.zip aws/"
+    }
+
+    step run {
+        name = "Run E2E tests"
+        command = "tests/e2e.sh /usr/local/bin/simples3-server"
+    }
+}
