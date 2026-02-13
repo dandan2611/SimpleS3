@@ -34,7 +34,7 @@ job "build" {
 
 job "e2e" {
     stage = "test"
-    image = "rust:1.83-bookworm"
+    image = "rust:1.93-bookworm"
     needs = ["build"]
 
     step checkout {}
